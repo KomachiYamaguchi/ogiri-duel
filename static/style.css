@@ -1,0 +1,68 @@
+body {
+    margin: 0;
+    padding: 0;
+    background-image: url('/static/images/bg_classroom.png');
+    background-size: cover;
+    background-position: center;
+    font-family: 'Arial', sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: flex-end;
+    position: relative;
+}
+
+/* キャラ画像を中央に */
+img.character {
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    height: 90vh;
+    z-index: 1;
+}
+
+/* セリフボックスを下中央に */
+.dialogue-box {
+    position: absolute;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 90%;
+    max-width: 800px;
+    background-color: rgba(255, 255, 255, 0.9);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    z-index: 2;
+     text-align: left;
+}
+
+.character-name {
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.dialogue-text {
+    margin: 0 0 10px 0;
+    font-size: 1.1em;
+}
+
+textarea {
+    width: 100%;
+    padding: 10px;
+    font-size: 1em;
+    margin-bottom: 10px;
+}
+
+button {
+    padding: 10px 20px;
+    font-size: 1em;
+}
+.score-display {
+    margin-top: 10px;
+    font-size: 1.5em;
+    color: #e91e63;
+    text-align: center;
+}

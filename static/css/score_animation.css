@@ -1,0 +1,60 @@
+body {
+  background-color: black;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#score-container {
+  position: relative;
+  width: 300px;
+  height: 300px;
+}
+
+.ring {
+  position: absolute;
+  border: 5px solid gold;
+  border-radius: 50%;
+  box-sizing: border-box;
+  animation: shrink 0.3s forwards;
+}
+
+.ring.red {
+  border-color: red;
+  border-width: 10px;
+}
+
+#ippon-text {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: red;
+  font-size: 3em;
+  font-weight: bold;
+  display: none;
+  animation: pop 0.6s ease-out forwards;
+}
+
+@keyframes shrink {
+  to {
+    transform: scale(0);
+    opacity: 0;
+  }
+}
+
+@keyframes pop {
+  0% {
+    transform: translate(-50%, -50%) scale(0.5);
+    opacity: 0;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.2);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
