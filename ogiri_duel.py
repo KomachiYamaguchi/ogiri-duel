@@ -1,5 +1,11 @@
 # ogiri_duel.py
 # -*- coding: utf-8 -*-
+# ============================================================
+# 必ず最初に eventlet.monkey_patch() を呼ぶ！（Render対策）
+# ============================================================
+import eventlet
+eventlet.monkey_patch()
+
 import os, re, json, time, random, string, math, hashlib, uuid
 from datetime import datetime, date, timezone
 from typing import Optional, Dict, Any, List, Set, Tuple
@@ -43,11 +49,11 @@ TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC"
 TOPIC_AI_TONE             = os.environ.get("OGIRI_TOPIC_AI_TONE", "standard")
 
 LOG_DIR = os.environ.get("OGIRI_LOG_DIR", "logs")
-SEGMENT_LOG_PATH = os.path.join(LOG_DIR, "segments.jsonl")               # ★ 追加
-SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")               # 既存互換
-AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")               # 既存互換
-AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")      # 既存互換
-TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")             # 既存互換
+SEGMENT_LOG_PATH = os.path.join(LOG_DIR, "segments.jsonl")
+SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")
+AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
+AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
+TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
 
 # ========= OpenAI =========
 def _make_openai_client():
@@ -69,7 +75,15 @@ def openai_available() -> bool:
 # ========= Flask / SocketIO =========
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "devkey")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# async_mode は "eventlet" に変更
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+
+# （以降のロジックはあなたのコードをそのまま保持）
+# -----------------------------------------------------------
+# ↓↓↓ 以下、あなたの元コードを一切削らず貼ってOK ↓↓↓
+# -----------------------------------------------------------
+
 
 # ========= ユーティリティ =========
 def _utcnow_iso() -> str:
