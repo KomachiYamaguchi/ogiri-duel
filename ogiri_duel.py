@@ -701,8 +701,20 @@ def change_prompt_same_mode(room: Room):
 
 # ========= ルート =========
 @app.route("/")
-def index():
-    return render_template("duel.html")
+def lobby():
+    """トップ：新ロビーを返す"""
+    return render_template("lobby.html")
+
+@app.route("/duel/<room_id>")
+def duel(room_id):
+    """対戦画面へ（従来のduel.htmlをそのまま利用）"""
+    name = request.args.get("name", "匿名")
+    return render_template("duel.html", room=room_id, name=name)
+
+@app.route("/health")
+def health():
+    """Render用ヘルスチェック"""
+    return jsonify(ok=True, mode=OGIRI_MODE, threshold=SCORE_THRESHOLD, topic_source=TOPIC_SOURCE)
 
 @app.route("/api/health")
 def api_health():
@@ -726,6 +738,26 @@ def on_set_name(data):
     sid_to_name[request.sid] = name
     emit("name_set", {"sid": request.sid, "name": name})
 
+# === クイックマッチ互換イベント (lobby.html対応) ===
+def _broadcast_waiting_count():
+    """待機人数を全員へ通知"""
+    try:
+        socketio.emit("waiting_count", {"count": len(quick_queue)})
+    except Exception:
+        pass
+
+@socketio.on("quick_match_join")
+def on_quick_match_join(data):
+    """新UI側からのクイックマッチ参加（既存join_queueを流用）"""
+    on_join_queue({})
+    _broadcast_waiting_count()
+
+@socketio.on("quick_match_cancel")
+def on_quick_match_cancel():
+    """新UI側からのクイックマッチ取消（既存cancel_queueを流用）"""
+    on_cancel_queue()
+    _broadcast_waiting_count()
+
 # ---- クイックマッチ ----
 @socketio.on("join_queue")
 def on_join_queue(_):
@@ -734,6 +766,8 @@ def on_join_queue(_):
     cleanup_sid(request.sid)
     quick_queue.append({"sid": request.sid, "name": name})
     emit("queue_joined", {"sid": request.sid, "capacity": QUICK_CAPACITY})
+    _broadcast_waiting_count()
+
     if len(quick_queue) >= QUICK_CAPACITY:
         group = quick_queue[:QUICK_CAPACITY]; quick_queue = quick_queue[QUICK_CAPACITY:]
         code = generate_room_code()
@@ -742,15 +776,20 @@ def on_join_queue(_):
             join_room(code, sid=m["sid"])
             room.members.append({"sid": m["sid"], "name": m["name"], "joined_at": datetime.utcnow().isoformat()})
             sid_to_room[m["sid"]] = code
+            # 新UIロビー互換イベント（各参加者へ直接通知）
+            socketio.emit("quick_match_assigned", {"room": code}, to=m["sid"])
+
         socketio.emit("matched", room.to_public(), room=code)
         broadcast_room_update(room)
         start_battle(room)
+        _broadcast_waiting_count()
 
 @socketio.on("cancel_queue")
 def on_cancel_queue():
     global quick_queue
     quick_queue = [x for x in quick_queue if x["sid"] != request.sid]
     emit("queue_canceled", {})
+    _broadcast_waiting_count()
 
 # ---- ルーム ----
 @socketio.on("create_room")
