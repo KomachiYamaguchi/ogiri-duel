@@ -1,45 +1,15 @@
 # ogiri_duel.py
 # -*- coding: utf-8 -*-
+# ============================================================
+# 必ず最初に eventlet.monkey_patch() を呼ぶ！（Render対策）
+# ============================================================
+import eventlet
+eventlet.monkey_patch()
+
 import os, re, json, time, random, string, math, hashlib, uuid
 from datetime import datetime, date, timezone
 from typing import Optional, Dict, Any, List, Set, Tuple
-from flask import Flask, render_template, request, jsonify
-from flask_socketio import SocketIO, emit, join_room, leave_room
-import difflib
-import mimetypes
-
-# 勝敗ログ（無ければダミーで動作）
-try:
-    from tools.battle_logger import log_battle_result
-except Exception:
-    def log_battle_result(*args, **kwargs):
-        pass
-
-# ========= 環境変数 =========
-OPENAI_MODEL = os.environ.get("OGIRI_MODEL", "gpt-4o-mini")
-
-# 画像お題は廃止（UI/内部も text 固定）
-OGIRI_MODE = "text"  # 強制テキスト
-
-SCORE_THRESHOLD   = float(os.environ.get("OGIRI_THRESHOLD", "7.0"))
-BATTLE_SECONDS    = int(os.environ.get("OGIRI_SECONDS", "180"))
-OVERTIME_SECONDS  = int(os.environ.get("OGIRI_OVERTIME_SECONDS", "90"))
-
-DUP_THRESH     = float(os.environ.get("OGIRI_DUP_THRESH", "0.76"))
-DUP_MAX        = float(os.environ.get("OGIRI_DUP_MAX", "6.0"))
-SELF_DUP_BONUS = float(os.environ.get("OGIRI_SELF_DUP_BONUS", "1.0"))
-
-QUICK_CAPACITY = 2
-RATE_LIMIT_SECONDS = float(os.environ.get("OGIRI_RATE_LIMIT_SECONDS", "1.0"))
-
-ALLOW_SKIP      = os.environ.get("OGIRI_ALLOW_SKIP", "1") == "1"
-SKIP_COOLDOWN   = int(os.environ.get("OGIRI_SKIP_COOLDOWN", "20"))
-SKIP_MAJORITY   = float(os.environ.get("OGIRI_SKIP_MAJORITY", "0.5"))
-
-TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")  # static | ai | hybrid
-TOPIC_AI_BATCH            = int(os.environ.get("OGIRI_TOPIC_AI_BATCH", "12"))
-TOPIC_AI_MAX_DAILY        = int(os.environ.get("OGIRI_TOPIC_AI_MAX_DAILY", "100"))
-TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC", "30"))
+@@ -43,11 +49,11 @@
 TOPIC_AI_TONE             = os.environ.get("OGIRI_TOPIC_AI_TONE", "standard")
 
 LOG_DIR = os.environ.get("OGIRI_LOG_DIR", "logs")
@@ -48,28 +18,28 @@ SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")               # 既�
 AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")               # 既存互換
 AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")      # 既存互換
 TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")             # 既存互換
+SEGMENT_LOG_PATH = os.path.join(LOG_DIR, "segments.jsonl")
+SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")
+AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
+AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
+TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
 
 # ========= OpenAI =========
 def _make_openai_client():
-    try:
-        from openai import OpenAI
-        return ("v1", OpenAI(api_key=os.environ.get("OPENAI_API_KEY", "")))
-    except Exception:
-        try:
-            import openai
-            openai.api_key = os.environ.get("OPENAI_API_KEY", "")
-            return ("legacy", openai)
-        except Exception:
-            return ("none", None)
-
-OPENAI_SDK, OPENAI_CLIENT = _make_openai_client()
-def openai_available() -> bool:
-    return (OPENAI_SDK in ("v1","legacy")) and (OPENAI_CLIENT is not None) and bool(os.environ.get("OPENAI_API_KEY", ""))
-
+@@ -69,909 +75,917 @@
 # ========= Flask / SocketIO =========
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "devkey")
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+
+# async_mode は "eventlet" に変更
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+
+# （以降のロジックはあなたのコードをそのまま保持）
+# -----------------------------------------------------------
+# ↓↓↓ 以下、あなたの元コードを一切削らず貼ってOK ↓↓↓
+# -----------------------------------------------------------
+
 
 # ========= ユーティリティ =========
 def _utcnow_iso() -> str:
