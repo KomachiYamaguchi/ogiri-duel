@@ -5,31 +5,53 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>大喜利DUEL - ロビー</title>
   <style>
-    :root{--bg:#0f172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#3b82f6;--accent-2:#60a5fa;--chip:#1f2937}
+    :root{--bg:#0f172a;--panel:#111827;--text:#e5e7eb;--muted:#9ca3af;--accent:#3b82f6;--chip:#1f2937;--bd:#263249}
     *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
     .wrap{max-width:760px;margin:24px auto;padding:0 16px}
     header{display:flex;align-items:center;gap:12px;margin-bottom:16px}
     .logo{display:grid;place-items:center;width:40px;height:40px;border-radius:10px;background:#1e293b;font-weight:700}
     .title{font-size:20px;font-weight:800}
-    .conn{margin-left:auto;padding:6px 10px;border-radius:999px;background:#0b1220;border:1px solid #263249;font-size:12px;color:#9fb4d3}
+    .conn{margin-left:auto;padding:6px 10px;border-radius:999px;background:#0b1220;border:1px solid var(--bd);font-size:12px}
+    .conn.ok{color:#9fd39f}.conn.ng{color:#9fb4d3}
     .card{background:var(--panel);border:1px solid #1f2937;border-radius:16px;padding:16px;margin:16px 0}
     .row{display:flex;gap:8px;align-items:center;margin:8px 0}
     input,select,button{font-size:16px}
-    input,select{flex:1;background:#0b1220;color:var(--text);border:1px solid #263249;border-radius:12px;padding:12px}
+    input,select{flex:1;background:#0b1220;color:var(--text);border:1px solid var(--bd);border-radius:12px;padding:12px}
     button.primary{background:var(--accent);color:#fff;border:none;border-radius:12px;padding:14px 16px;font-weight:700}
+    button[disabled]{opacity:.5;cursor:not-allowed}
     .muted{color:var(--muted);font-size:12px}
-    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:var(--chip);border:1px solid #263249;font-size:12px}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;background:var(--chip);border:1px solid var(--bd);font-size:12px}
+    h3{margin:0 0 8px 0}
+    .right{margin-left:auto}
   </style>
-  <script src="/socket.io/socket.io.js"></script>
+
+  <!-- ソケット本体: ローカル配信 → 失敗ならCDNに自動フォールバック -->
+  <script>
+  (function loadSocketIO(cb){
+    function ok(){ cb(); }
+    var s=document.createElement('script');
+    s.src='/socket.io/socket.io.js';
+    s.onload=ok;
+    s.onerror=function(){
+      var c=document.createElement('script');
+      c.src='https://cdn.socket.io/4.7.5/socket.io.min.js';
+      c.crossOrigin='anonymous';
+      c.onload=ok;
+      document.head.appendChild(c);
+    };
+    document.head.appendChild(s);
+  })(function(){ initLobby(); });
+  </script>
 </head>
 <body>
   <div class="wrap">
     <header>
       <div class="logo">祭</div>
       <div class="title">大喜利DUEL<br><span class="muted">ロビー</span></div>
-      <div id="conn" class="conn">接続: 未接続</div>
+      <div id="conn" class="conn ng">接続: 未接続</div>
     </header>
 
+    <!-- プレイヤー設定 -->
     <div class="card">
       <div class="row">
         <input id="name" placeholder="例：ヤマグチ" />
@@ -38,91 +60,155 @@
       <div class="muted">※ 自動保存（端末にのみ保存）</div>
       <div class="row" style="margin-top:8px">
         <select id="mode">
-          <option value="2">2人対戦</option>
+          <option value="2" selected>2人対戦</option>
         </select>
-        <span class="muted">※ サーバ未対応の場合は無視</span>
+        <span class="muted">※ サーバ未対応なら無視</span>
       </div>
     </div>
 
+    <!-- クイックマッチ -->
     <div class="card">
-      <h3 style="margin:0 0 8px 0">いま遊ぶ（クイックマッチ）</h3>
+      <h3>いま遊ぶ（クイックマッチ）</h3>
       <div class="row">
-        <button id="quick" class="primary" style="width:100%">▶ クイックマッチ開始</button>
+        <button id="quick" class="primary" style="width:100%" disabled>▶ クイックマッチ開始</button>
       </div>
       <div class="row">
         <span class="pill" id="waiting">0</span>
         <span class="pill">待機: 2人マッチ</span>
+        <button id="cancel" class="pill right" disabled>取り消し</button>
       </div>
-      <div class="muted">※ サーバが未実装でも、成立したら対戦画面に即移動します。</div>
-      <div class="row">
-        <button id="cancel" class="pill">取り消し</button>
-      </div>
+      <div class="muted">※ 成立したら対戦画面に即移動します。</div>
     </div>
 
+    <!-- 友だちと遊ぶ：コード参加 -->
     <div class="card">
-      <h3 style="margin:0 0 8px 0">友だちと遊ぶ（コード参加）</h3>
+      <h3>友だちと遊ぶ（コード参加）</h3>
       <div class="row">
         <input id="code" placeholder="ABCD" maxlength="4" />
-        <button id="join" class="pill">参加</button>
+        <button id="join" class="pill" disabled>参加</button>
       </div>
-      <div class="muted">※ ルーム作成は相手側からコード共有→入力→参加。</div>
+      <div class="muted">※ ルーム作成は下の「ルーム作成」から作り、コード共有→参加。</div>
+    </div>
+
+    <!-- 友だちと遊ぶ：ルーム作成（復活） -->
+    <div class="card">
+      <h3>ルーム作成</h3>
+      <div class="row">
+        <select id="cap">
+          <option value="2" selected>2人</option>
+          <option value="3">3人</option>
+          <option value="4">4人</option>
+          <option value="5">5人</option>
+        </select>
+        <button id="make" class="pill" disabled>ルーム作成</button>
+      </div>
+      <div class="muted">※ 作成すると対戦画面に移動します。コードを友だちに共有してください。</div>
     </div>
   </div>
 
 <script>
-(function(){
+function initLobby(){
   const $ = s => document.querySelector(s);
   const nameInput = $('#name');
   const conn = $('#conn');
+  const btnQuick = $('#quick');
+  const btnCancel = $('#cancel');
+  const btnJoin = $('#join');
+  const btnMake = $('#make');
   const waiting = $('#waiting');
 
-  // ---- name keep ----
+  // ---- 名前の保存・復元
   const savedName = localStorage.getItem('ogiri_name') || '';
   if(savedName) nameInput.value = savedName;
   $('#save').onclick = () => {
     localStorage.setItem('ogiri_name', nameInput.value.trim() || '匿名');
   };
 
-  // ---- socket ----
-  const socket = io({transports:['websocket','polling']});
+  // ---- Socket 接続（安定化オプション＋リトライ）
+  const socket = io({
+    transports:['websocket','polling'],
+    path:'/socket.io',
+    reconnection:true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 500,
+    reconnectionDelayMax: 3000,
+  });
+
+  function enableUI(on){
+    [btnQuick, btnCancel, btnJoin, btnMake].forEach(b=>{
+      b.disabled = !on;
+    });
+  }
+
   socket.on('connect', () => {
     conn.textContent = '接続: 接続済み';
+    conn.classList.remove('ng'); conn.classList.add('ok');
+    enableUI(true);
     const n = (nameInput.value || '匿名').trim();
     socket.emit('set_name', {name: n});
   });
-  socket.on('disconnect', () => conn.textContent = '接続: 未接続');
 
-  // 待機人数
-  socket.on('waiting_count', (p)=> { waiting.textContent = (p && p.count||0); });
+  socket.on('disconnect', () => {
+    conn.textContent = '接続: 未接続';
+    conn.classList.remove('ok'); conn.classList.add('ng');
+    enableUI(false);
+  });
 
-  // クイックマッチ → サーバへ
-  $('#quick').onclick = () => {
+  socket.on('connect_error', () => {
+    conn.textContent = '接続: 再接続中…';
+    conn.classList.remove('ok'); conn.classList.add('ng');
+  });
+
+  // 待機人数の表示（サーバがemitしてくれる）
+  socket.on('waiting_count', (p)=> { waiting.textContent = (p && p.count || 0); });
+
+  // クイックマッチ
+  btnQuick.onclick = () => {
     const n = (nameInput.value || '').trim() || '匿名';
     localStorage.setItem('ogiri_name', n);
     socket.emit('set_name', {name:n});
     socket.emit('quick_match_join', {});
+    btnQuick.disabled = true; // 連打防止（成立/取り消しで戻す）
+    btnCancel.disabled = false;
   };
-  $('#cancel').onclick = () => socket.emit('quick_match_cancel');
+  btnCancel.onclick = () => {
+    socket.emit('quick_match_cancel');
+    btnQuick.disabled = false;
+    btnCancel.disabled = true;
+  };
 
-  // マッチ成立 → 余計なページを挟まず /duel に直行
+  // 成立通知 → 余計な中間ページを挟まず /duel 直行
   socket.on('quick_match_assigned', ({room}) => {
     const n = encodeURIComponent(localStorage.getItem('ogiri_name') || nameInput.value || '匿名');
     location.href = `/duel/${room}?name=${n}`;
   });
 
-  // 互換: サーバからの一般イベント（あっても無くてもOK）
-  socket.on('queue_joined', ()=>{/* no-op */});
-  socket.on('matched', ()=>{/* room broadcast; ロビーでは未使用 */});
-
-  // コード参加
-  $('#join').onclick = () => {
+  // 友だちと遊ぶ：コード参加（そのまま /duel に移動）
+  btnJoin.onclick = () => {
     const code = ($('#code').value || '').toUpperCase().replace(/[^A-Z]/g,'').slice(0,4);
     if(!code){ alert('コードを入力'); return; }
-    // ロビー側からはまず /duel へ移動して、対戦ページのUI/ソケットでハンドリング
     const n = encodeURIComponent(localStorage.getItem('ogiri_name') || nameInput.value || '匿名');
     location.href = `/duel/${code}?name=${n}`;
   };
-})();
+
+  // ルーム作成（復活）
+  btnMake.onclick = () => {
+    const cap = parseInt($('#cap').value || '2', 10);
+    const n = (nameInput.value || '').trim() || '匿名';
+    localStorage.setItem('ogiri_name', n);
+    socket.emit('set_name', {name:n});
+    socket.emit('create_room', {capacity: cap});
+    btnMake.disabled = true;
+  };
+  socket.on('room_created', (payload) => {
+    const code = (payload && payload.code) || (payload && payload.room && payload.room.code);
+    const n = encodeURIComponent(localStorage.getItem('ogiri_name') || nameInput.value || '匿名');
+    if(code){ location.href = `/duel/${code}?name=${n}`; }
+    else { btnMake.disabled = false; alert('ルーム作成に失敗しました'); }
+  });
+
+  // （互換）queue_joined / matched はロビーでは無視
+}
 </script>
 </body>
 </html>
