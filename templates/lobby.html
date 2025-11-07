@@ -1,21 +1,437 @@
 <!doctype html>
 <html lang="ja">
-<head><meta charset="utf-8"><title>大喜利DUEL ロビー</title></head>
-<body>
-  <h1>大喜利DUEL ロビー</h1>
-  <form onsubmit="goRoom(event)">
-    <input id="name" placeholder="ニックネーム" value="ヤマグチ" required />
-    <input id="room" placeholder="room-1 等" value="room-1" required />
-    <button type="submit">入室</button>
-  </form>
-  <p><a href="/health" target="_blank">/health（動作確認用）</a></p>
-  <script>
-    function goRoom(e){
-      e.preventDefault();
-      const name = document.getElementById('name').value.trim();
-      const room = document.getElementById('room').value.trim();
-      location.href = `/duel/${encodeURIComponent(room)}?name=${encodeURIComponent(name)}`;
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>大喜利DUEL - ロビー</title>
+  <!-- Socket.IO（ある環境では自動取得／無くてもフォールバック動作） -->
+  <script src="/socket.io/socket.io.js" defer></script>
+  <style>
+    :root{
+      --bg:#0f141b;
+      --card:#171e27;
+      --card-2:#111823;
+      --text:#e8f0f7;
+      --muted:#b6c2cf;
+      --primary:#3c82ff;
+      --primary-press:#2f69cc;
+      --outline:#2a3544;
+      --ok:#21c17a;
+      --warn:#ffbe3c;
+      --err:#ff5c5c;
+      --radius:14px;
+      --radius-sm:10px;
+      --shadow:0 6px 24px rgba(0,0,0,.25);
     }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+      background:linear-gradient(180deg, #0c1117 0%, #0f141b 60%, #0f141b 100%);
+      color:var(--text);
+    }
+    .wrap{
+      max-width: 980px;
+      margin: 0 auto;
+      padding: clamp(16px, 3vw, 28px);
+    }
+    header{
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom: 18px;
+    }
+    .brand{
+      display:flex; align-items:center; gap:12px;
+      font-weight:800; letter-spacing:.5px;
+    }
+    .logo{
+      width:34px; height:34px; border-radius:10px;
+      display:grid; place-items:center;
+      background: radial-gradient(120% 120% at 30% 20%, #5aa2ff 0%, #3c82ff 40%, #295bcc 100%);
+      box-shadow: 0 6px 18px rgba(60,130,255,.45), inset 0 0 12px rgba(255,255,255,.25);
+      font-weight:900;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+    }
+    @media (min-width: 860px){
+      .grid{
+        grid-template-columns: 1.1fr 1fr;
+        gap: 18px;
+      }
+    }
+    .card{
+      background: var(--card);
+      border:1px solid var(--outline);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .card--thin{ padding:12px; }
+    h1,h2,h3{ margin:0 0 10px 0 }
+    h1{ font-size:20px; }
+    h2{ font-size:18px; }
+    p{ color:var(--muted); margin:8px 0 }
+    .row{ display:flex; gap:10px; align-items:center; }
+    .col{ display:flex; flex-direction:column; gap:8px; }
+    label{ font-size:13px; color:var(--muted) }
+    input, select{
+      width:100%;
+      background: var(--card-2);
+      color: var(--text);
+      border: 1px solid var(--outline);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
+      font-size: 16px;
+      outline: none;
+    }
+    input:focus, select:focus{ border-color: #4c87ff; box-shadow: 0 0 0 3px rgba(76,135,255,.15) }
+    .pill{
+      display:inline-flex; align-items:center; gap:8px;
+      background: #0d1521; border:1px solid var(--outline);
+      color: var(--muted);
+      border-radius: 999px; padding: 6px 10px; font-size:12px;
+    }
+    .btn{
+      appearance:none; border:none; cursor:pointer;
+      width:100%;
+      border-radius: var(--radius-sm);
+      padding: 12px 14px; font-size: 16px; font-weight:700;
+      display:inline-flex; gap:10px; align-items:center; justify-content:center;
+    }
+    .btn:disabled{ opacity:.6; cursor:not-allowed }
+    .btn--primary{ color:white; background: var(--primary); }
+    .btn--primary:active{ background: var(--primary-press); }
+    .btn--outline{
+      color: var(--text);
+      background: transparent;
+      border:1px solid var(--outline);
+    }
+    .btn--ghost{
+      color: var(--muted);
+      background: transparent;
+    }
+    .help{
+      display:flex; gap:10px; flex-wrap:wrap; margin-top:12px;
+    }
+    .footer{
+      margin-top: 18px; color: var(--muted); font-size: 12px;
+      display:flex; gap:12px; flex-wrap:wrap;
+    }
+    .section-title{
+      display:flex; align-items:center; justify-content:space-between;
+      margin-bottom: 8px;
+    }
+    .status{
+      display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    }
+    /* トースト */
+    .toast{
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      background: #0b1220; color: var(--text);
+      border:1px solid var(--outline);
+      padding: 12px 16px; border-radius: 12px; box-shadow: var(--shadow);
+      display:none; z-index: 50; max-width: 92vw;
+    }
+    .toast[data-show="true"]{ display:block; }
+    .kbd{
+      padding: 2px 6px; border:1px solid var(--outline); border-bottom-width:2px;
+      border-radius:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      background: #0e1623; color: var(--text); font-size: 12px;
+    }
+    /* 入力の横並び（スマホでも気持ち良く） */
+    .inline{
+      display:grid; grid-template-columns: 1fr auto; gap:10px;
+    }
+    /* 待機人数の丸ピル */
+    .bubble{
+      display:inline-flex; align-items:center; justify-content:center;
+      width: 38px; height: 38px; border-radius: 50%;
+      background:#0d1521; border:1px solid var(--outline);
+      font-weight:800; color:#9fb4d1;
+    }
+    a{ color:#9fc1ff; text-decoration:none }
+    a:hover{ text-decoration:underline }
+    /* セクション余白 */
+    .stack{ display:flex; flex-direction:column; gap:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo">祭</div>
+        <div>
+          <div style="font-size:18px; font-weight:900;">大喜利DUEL</div>
+          <div style="font-size:12px; color:var(--muted);">ロビー</div>
+        </div>
+      </div>
+      <div class="pill" id="connection-pill" aria-live="polite">接続: 未確立</div>
+    </header>
+
+    <!-- 上段：ユーザー設定 -->
+    <section class="card card--thin">
+      <div class="grid">
+        <div class="col">
+          <label for="player-name">プレイヤー名</label>
+          <div class="inline">
+            <input id="player-name" placeholder="例：ヤマグチ" autocomplete="nickname" />
+            <button class="btn btn--outline" id="save-name" title="保存"><span id="save-name-label">保存</span> <span id="saved-check" hidden>✓</span></button>
+          </div>
+          <p style="margin:2px 0 0; font-size:12px; color:var(--muted)">※ 自動保存。端末にのみ保存されます</p>
+        </div>
+
+        <div class="col">
+          <label for="mode">対戦形式</label>
+          <select id="mode">
+            <option value="2" selected>2人対戦</option>
+            <option value="3">3人対戦（β）</option>
+            <option value="4">4人対戦（β）</option>
+          </select>
+          <p style="margin:2px 0 0; font-size:12px; color:var(--muted)">※ サーバ未対応の場合は無視されます</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 中段：開始方法（左＝クイック、右＝コード） -->
+    <section class="grid">
+      <!-- クイックマッチ -->
+      <div class="card stack">
+        <div class="section-title">
+          <h2>いま遊ぶ（クイックマッチ）</h2>
+          <span class="pill">同時に2人揃うと開始</span>
+        </div>
+        <button class="btn btn--primary" id="quick-btn">▶ クイックマッチ開始</button>
+        <div class="status">
+          <span class="bubble" id="queue-count">0</span>
+          <span class="pill" id="queue-label">待機: 2人マッチ</span>
+          <button class="btn btn--ghost" id="quick-cancel" style="display:none">待機をやめる</button>
+        </div>
+        <p style="font-size:13px;">サーバが未実装の場合は、即時プレイ用のルームを自動作成して移動します。</p>
+      </div>
+
+      <!-- ルームコード -->
+      <div class="card stack">
+        <div class="section-title">
+          <h2>友だちと遊ぶ（コード参加）</h2>
+          <span class="pill">コード共有で合流</span>
+        </div>
+
+        <div class="col">
+          <label for="join-code">参加コード / 部屋ID</label>
+          <div class="inline">
+            <input id="join-code" placeholder="例：room-1 / ABCD" inputmode="latin" autocomplete="off" />
+            <button class="btn btn--outline" id="join-btn" disabled>参加</button>
+          </div>
+          <p style="margin:2px 0 0; font-size:12px; color:var(--muted)">※ 4桁のコードは自動で英大文字になります</p>
+        </div>
+
+        <div class="col">
+          <label>ルーム作成 & 共有</label>
+          <div class="row" style="gap:8px">
+            <button class="btn btn--outline" id="create-room">ルーム作成</button>
+            <button class="btn btn--ghost" id="copy-room" disabled>コードをコピー</button>
+            <span class="pill" id="created-room-pill" style="display:none"></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 下段：補助 -->
+    <section class="card card--thin">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div class="help">
+          <a href="/howto" target="_blank">遊び方</a>
+          <a href="/terms" target="_blank">利用規約</a>
+          <a href="/privacy" target="_blank">プライバシー</a>
+          <a href="/health" target="_blank">動作確認 /health</a>
+        </div>
+        <div class="pill">IPPPON閾値は対戦画面で表示</div>
+      </div>
+    </section>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </div>
+
+  <script>
+    // --------- ユーティリティ ---------
+    const $ = (sel) => document.querySelector(sel);
+    const toastEl = $('#toast');
+    function toast(msg, ms=1600){
+      toastEl.textContent = msg;
+      toastEl.dataset.show = "true";
+      clearTimeout(toastEl._t);
+      toastEl._t = setTimeout(()=> toastEl.dataset.show="false", ms);
+    }
+    function randCode(len=4){
+      const s = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let out = "";
+      for(let i=0;i<len;i++) out += s[Math.floor(Math.random()*s.length)];
+      return out;
+    }
+    function buildRoomId(kind="QM"){
+      return `${kind}-${randCode(4)}`; // 例: QM-ABCD
+    }
+    function navigateToRoom(roomId, name, extraQuery={}){
+      const q = new URLSearchParams({ name, ...extraQuery });
+      location.href = `/duel/${encodeURIComponent(roomId)}?` + q.toString();
+    }
+    function getName(){
+      return ($('#player-name').value || '').trim() || '匿名';
+    }
+    function saveNameUI(saved=true){
+      $('#saved-check').hidden = !saved;
+      $('#save-name-label').textContent = saved ? '保存済み' : '保存';
+    }
+
+    // --------- 初期化：名前保存 & UI ----------
+    (function init(){
+      // localStorageでプレイヤー名を保持
+      const key = 'ogiri_player_name';
+      const saved = localStorage.getItem(key);
+      if(saved) $('#player-name').value = saved;
+      $('#player-name').addEventListener('input', ()=>{
+        localStorage.setItem(key, $('#player-name').value);
+        saveNameUI(true);
+      });
+      $('#save-name').addEventListener('click', (e)=>{
+        e.preventDefault();
+        localStorage.setItem(key, $('#player-name').value);
+        saveNameUI(true);
+        toast('名前を保存しました');
+      });
+      saveNameUI(!!saved);
+
+      // 参加コード入力
+      const joinInput = $('#join-code');
+      const joinBtn = $('#join-btn');
+      joinInput.addEventListener('input', ()=>{
+        let v = joinInput.value.trim();
+        // 4桁だけ入力されているときは英大文字化
+        if(/^[a-zA-Z0-9]{1,4}$/.test(v)) v = v.toUpperCase();
+        joinInput.value = v;
+        joinBtn.disabled = v.length === 0;
+      });
+      joinBtn.addEventListener('click', ()=>{
+        const room = joinInput.value.trim();
+        if(!room){ toast('コード／部屋IDを入力してください'); return; }
+        navigateToRoom(room, getName(), { mode: $('#mode').value });
+      });
+
+      // ルーム作成 & コピー
+      let createdRoom = null;
+      $('#create-room').addEventListener('click', ()=>{
+        createdRoom = buildRoomId('ROOM');
+        $('#created-room-pill').style.display = 'inline-flex';
+        $('#created-room-pill').textContent = createdRoom;
+        $('#copy-room').disabled = false;
+        toast('ルームを作成しました（コードを共有してください）');
+      });
+      $('#copy-room').addEventListener('click', async ()=>{
+        if(!createdRoom) return;
+        try{
+          await navigator.clipboard.writeText(createdRoom);
+          toast('コードをコピーしました');
+        }catch(e){
+          toast('コピーできませんでした…長押しで選択してコピーしてください');
+        }
+      });
+
+      // クイックマッチ（Socket.IO対応 → フォールバック）
+      const quickBtn = $('#quick-btn');
+      const quickCancel = $('#quick-cancel');
+      const queueCount = $('#queue-count');
+      const connPill = $('#connection-pill');
+
+      let socket = null;
+      let joinedQuick = false;
+
+      function setConn(status){
+        connPill.textContent = `接続: ${status}`;
+      }
+
+      function enterWaitingUI(){
+        quickBtn.disabled = true;
+        quickBtn.textContent = '⏳ マッチ中…';
+        quickCancel.style.display = 'inline-flex';
+      }
+      function leaveWaitingUI(){
+        quickBtn.disabled = false;
+        quickBtn.textContent = '▶ クイックマッチ開始';
+        quickCancel.style.display = 'none';
+      }
+
+      function quickFallback(){
+        // サーバ未対応: 即時プレイルームを生成して入室
+        const room = buildRoomId('QM');
+        toast('即時プレイルームを作成して入室します');
+        navigateToRoom(room, getName(), { mode: $('#mode').value });
+      }
+
+      // Socket.IO 初期化（あれば）
+      window.addEventListener('load', ()=>{
+        if(typeof io === 'function'){
+          try{
+            socket = io();
+            setConn('接続中…');
+            socket.on('connect', ()=> setConn('接続済み'));
+            socket.on('disconnect', ()=> setConn('未接続'));
+
+            // 待機人数の更新（サーバ実装がある場合）
+            socket.on('waiting_count', (payload)=>{
+              if(payload && typeof payload.count === 'number'){
+                queueCount.textContent = payload.count;
+              }
+            });
+
+            // マッチ割当
+            socket.on('quick_match_assigned', (payload)=>{
+              if(!payload || !payload.room){ quickFallback(); return; }
+              toast('対戦相手が見つかりました。入室します');
+              navigateToRoom(payload.room, getName(), { mode: $('#mode').value });
+            });
+
+            // エラー受信
+            socket.on('quick_match_error', (payload)=>{
+              leaveWaitingUI();
+              toast(payload?.message || 'マッチングでエラーが発生しました', 2200);
+            });
+
+          }catch(e){
+            setConn('未接続');
+          }
+        }else{
+          setConn('未接続');
+        }
+      });
+
+      // クリック動作
+      quickBtn.addEventListener('click', ()=>{
+        const name = getName();
+        if(!name){ toast('プレイヤー名を入力してください'); return; }
+        enterWaitingUI();
+
+        if(socket && socket.connected){
+          joinedQuick = true;
+          socket.emit('quick_match_join', { name, mode: $('#mode').value });
+          toast('マッチング待機に入りました');
+        }else{
+          // フォールバック
+          setTimeout(quickFallback, 300);
+        }
+      });
+
+      quickCancel.addEventListener('click', ()=>{
+        if(socket && socket.connected && joinedQuick){
+          socket.emit('quick_match_cancel', {});
+        }
+        joinedQuick = false;
+        leaveWaitingUI();
+        toast('待機をやめました');
+      });
+    })();
   </script>
 </body>
 </html>
