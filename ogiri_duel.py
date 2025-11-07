@@ -1,5 +1,8 @@
 # ogiri_duel.py
 # -*- coding: utf-8 -*-
+# ============================================================
+# Render（eventlet）対策：必ず最初に monkey_patch を呼ぶ
+# ============================================================
 import eventlet
 eventlet.monkey_patch()
 
@@ -9,17 +12,20 @@ from typing import Optional, Dict, Any, List, Set, Tuple
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import difflib
+import mimetypes
 
-# ---- optional battle logger ----
+# 勝敗ログ（無ければダミーで動作）
 try:
     from tools.battle_logger import log_battle_result
 except Exception:
     def log_battle_result(*args, **kwargs):
         pass
 
-# ---- env ----
+# ========= 環境変数 =========
 OPENAI_MODEL = os.environ.get("OGIRI_MODEL", "gpt-4o-mini")
-OGIRI_MODE = "text"
+
+# 画像お題は廃止（UI/内部も text 固定）
+OGIRI_MODE = "text"  # 強制テキスト
 
 SCORE_THRESHOLD   = float(os.environ.get("OGIRI_THRESHOLD", "7.0"))
 BATTLE_SECONDS    = int(os.environ.get("OGIRI_SECONDS", "180"))
@@ -36,7 +42,7 @@ ALLOW_SKIP      = os.environ.get("OGIRI_ALLOW_SKIP", "1") == "1"
 SKIP_COOLDOWN   = int(os.environ.get("OGIRI_SKIP_COOLDOWN", "20"))
 SKIP_MAJORITY   = float(os.environ.get("OGIRI_SKIP_MAJORITY", "0.5"))
 
-TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")
+TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")  # static | ai | hybrid
 TOPIC_AI_BATCH            = int(os.environ.get("OGIRI_TOPIC_AI_BATCH", "12"))
 TOPIC_AI_MAX_DAILY        = int(os.environ.get("OGIRI_TOPIC_AI_MAX_DAILY", "100"))
 TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC", "30"))
@@ -49,7 +55,7 @@ AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
 AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
 TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
 
-# ---- OpenAI (optional) ----
+# ========= OpenAI =========
 def _make_openai_client():
     try:
         from openai import OpenAI
@@ -66,12 +72,14 @@ OPENAI_SDK, OPENAI_CLIENT = _make_openai_client()
 def openai_available() -> bool:
     return (OPENAI_SDK in ("v1","legacy")) and (OPENAI_CLIENT is not None) and bool(os.environ.get("OPENAI_API_KEY", ""))
 
-# ---- Flask/SocketIO ----
+# ========= Flask / SocketIO =========
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "devkey")
+
+# async_mode は "eventlet"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
-# ---- utils ----
+# ========= ユーティリティ =========
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00","Z")
 
@@ -102,18 +110,14 @@ def _write_json(path: str, data: dict):
         print("[WARN] write json failed:", path, e)
 
 def _normalize_topic_text(s: str) -> str:
-    import re, hashlib
     s = (s or "").strip()
     s = re.sub(r"\s+", "", s).lower()
-    s = re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]", "", s)
-    return s
+    return re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]", "", s)
 
 def _hash_norm(s: str) -> str:
-    import hashlib
     return hashlib.sha1(_normalize_topic_text(s).encode("utf-8")).hexdigest()
 
 def normalize_text(s: str) -> str:
-    import re
     s = (s or "").lower().strip()
     s = re.sub(r"[ \t\r\n]+", "", s)
     s = re.sub(r"[^\w\u3040-\u30ff\u4e00-\u9fff]", "", s)
@@ -122,7 +126,7 @@ def normalize_text(s: str) -> str:
 def similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, normalize_text(a), normalize_text(b)).ratio()
 
-# ---- topics ----
+# ========= テキストお題（静的 + AI） =========
 STATIC_TOPICS = [
     "新しい神様の特徴とは？","観客がざわつく漫才の入り方","スマホに新機能『これ要る？』何ができる？",
     "寿司職人が絶対に言わない一言","ランドセルに搭載できる驚きの機能","一周回って褒め言葉っぽい悪口",
@@ -137,8 +141,8 @@ NG_PATTERNS = [
     r"(性的|わいせつ|成人向け|下ネタ)",
     r"(個人名|著名人|芸能人|実在の会社名)"
 ]
-import re
 NG_REGEXES = [re.compile(p) for p in NG_PATTERNS]
+
 def _is_safe_topic(text: str) -> bool:
     t = (text or "").strip()
     if len(t) < 5 or len(t) > 60: return False
@@ -166,24 +170,20 @@ def _can_ai_generate_now() -> bool:
 
 def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[str, Any]]:
     if not openai_available(): return []
-    pref = prefer_genre or random.choice(GENRE_MASTER)
     sys = {"role":"system","content":"あなたは日本語の大喜利お題エディタです。安全で短いお題を作ります。出力はJSON {items:[{text,genre}]} のみ。"}
+    pref = prefer_genre or random.choice(GENRE_MASTER)
     usr = {"role":"user","content": json.dumps({"count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
     try:
         if OPENAI_SDK == "v1":
-            out = OPENAI_CLIENT.chat.completions.create(
-                model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8,
-                response_format={"type":"json_object"}
-            ).choices[0].message.content
+            resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8, response_format={"type":"json_object"})
+            out = resp.choices[0].message.content
         else:
-            out = OPENAI_CLIENT.ChatCompletion.create(
-                model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8
-            )["choices"][0]["message"]["content"]
+            resp = OPENAI_CLIENT.ChatCompletion.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8)
+            out = resp["choices"][0]["message"]["content"]
         data = json.loads(out or "{}"); items = data.get("items", [])
         result=[]
         for it in items:
-            txt = (it or {}).get("text","").strip()
-            gen = (it or {}).get("genre","日常")
+            txt=(it or {}).get("text","").strip(); gen=(it or {}).get("genre","日常")
             if not txt or not _is_safe_topic(txt): continue
             h=_hash_norm(txt)
             if h in used_hashes: continue
@@ -199,11 +199,13 @@ def _enqueue_ai_topics():
     if not _can_ai_generate_now(): return
     got = _ai_generate_topics(TOPIC_AI_BATCH, None)
     for it in got:
-        topic_queue.append(it); used_hashes.add(_hash_norm(it["text"]))
+        topic_queue.append(it)
+        used_hashes.add(_hash_norm(it["text"]))
     if got:
         _ai_daily_count += len(got); _last_ai_gen_ts = time.time()
 
 def pick_text_prompt() -> Dict[str, Any]:
+    # static only / ai only / hybrid
     if TOPIC_SOURCE == "static":
         txt = random.choice(STATIC_TOPICS)
         item = {"id": f"st-{random.randint(1000,9999)}","text":txt,"genre":"日常","source":"static"}
@@ -228,7 +230,7 @@ def pick_text_prompt() -> Dict[str, Any]:
     recent_topics_window.append((item["text"], item["genre"], time.time())); recent_topics_window[:] = recent_topics_window[-RECENT_WINDOW_SIZE:]
     return item
 
-# ---- dup penalty ----
+# ========= 類似ペナルティ =========
 def dup_penalty_for(room: "Room", rec: dict) -> dict:
     best, best_ratio, best_is_self = None, 0.0, False
     for sid, arr in room.answers.items():
@@ -243,11 +245,21 @@ def dup_penalty_for(room: "Room", rec: dict) -> dict:
         return {"penalty": round(penalty,2),"similar_to":{"id":best["id"],"name":best["name"],"ratio":round(best_ratio,2),"self_dup":best_is_self}}
     return {"penalty": 0.0, "similar_to": None}
 
-# ---- scoring ----
+# ========= 採点（テキストお題のみ） =========
 def build_one_prompt(topic_obj: dict, name: str, text: str, ans_id: str):
-    sys_msg = {"role":"system","content":"あなたは日本語の大喜利審査員です。回答を0〜10点で採点。JSON {id,score,comment,vision_used=false} だけを返す。"}
+    sys_msg = {
+        "role": "system",
+        "content": (
+            "あなたは日本語の大喜利審査員です。テキストお題への回答を0〜10点で採点します。"
+            "評価観点: 独創性/意外性、文脈適合、即時のウケやすさ、品の維持。"
+            "出力は必ずJSON（id,score,comment,vision_used=false）で、他の文字は出力しないこと。"
+            "scoreは数値（0〜10）。commentは短い根拠（20〜60字程度）。"
+        )
+    }
     ttext = topic_obj.get("text") if isinstance(topic_obj, dict) else str(topic_obj)
-    usr_msg = {"role":"user","content":f"お題:{ttext}\n回答者:{name}\n回答ID:{ans_id}\n回答:{text}\nvision_used=false"}
+    usr_msg = {"role":"user","content": ("『テキストお題』の採点。JSONのみ。"
+                                        f"\nお題: {ttext}\n回答者: {name}\n回答ID: {ans_id}\n回答: {text}\n"
+                                        "vision_used は常に false。")}
     return [sys_msg, usr_msg]
 
 def _extract_json(s: str):
@@ -268,14 +280,11 @@ def score_one(room: "Room", a: dict) -> dict:
         topic = room.current_prompt
         msgs = build_one_prompt(topic, a["name"], a["text"], a["id"])
         if OPENAI_SDK == "v1":
-            out = OPENAI_CLIENT.chat.completions.create(
-                model=OPENAI_MODEL, messages=msgs, temperature=0.2,
-                response_format={"type":"json_object"}
-            ).choices[0].message.content
+            resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=msgs, temperature=0.2, response_format={"type":"json_object"})
+            out = resp.choices[0].message.content
         else:
-            out = OPENAI_CLIENT.ChatCompletion.create(
-                model=OPENAI_MODEL, messages=msgs, temperature=0.2
-            )["choices"][0]["message"]["content"]
+            resp = OPENAI_CLIENT.ChatCompletion.create(model=OPENAI_MODEL, messages=msgs, temperature=0.2)
+            out = resp["choices"][0]["message"]["content"]
         data = _extract_json(out) or {}
         try: sc = float(data.get("score", 0))
         except Exception: sc = 0.0
@@ -285,7 +294,7 @@ def score_one(room: "Room", a: dict) -> dict:
     except Exception as e:
         return {"id": a["id"], "score_raw": 0.0, "comment": f"ERROR: {e}"}
 
-# ---- state ----
+# ========= 状態（セグメント管理込み） =========
 class Room:
     def __init__(self, code: str, capacity: int = 2):
         self.code = code
@@ -293,17 +302,27 @@ class Room:
         self.members = []
         self.status = "waiting"
         self.round_no = 1
-        self.round_mode = "text"
+        self.round_mode = "text"  # 強制
         self.current_prompt=None
         self.round_end_ts=None
+
+        # 旧来ラウンド全体の回答（重複ペナルティやボード算出に使う）
         self.answers: Dict[str, List[dict]] = {}
+
+        # スキップ／投票
         self.skip_votes:set[str] = set()
         self.skip_cooldown_until = 0.0
         self.skip_lock=False
         self.last_submit_ts: Dict[str, float] = {}
+
+        # AB
         self.last_ab_snapshot=None
+
+        # セグメント管理
         self.current_segment: Optional[dict] = None
         self.completed_segments: List[dict] = []
+
+        # スコアボード
         self.board={}
 
     def to_public(self):
@@ -319,11 +338,15 @@ class Room:
             "round_end_ts": self.round_end_ts
         }
 
+# 全体状態
 rooms: Dict[str, Room] = {}
 sid_to_room: Dict[str, str] = {}
 sid_to_name: Dict[str, str] = {}
-quick_queue: List[dict] = []
+quick_queue: List[dict] = []  # 互換で残す
+# 追加：先に部屋を発行して待機させる方式
+quick_wait_rooms: List[str] = []
 
+# ========= AB評価：サーバ内セッション =========
 AB_PAIRS_PER_USER = 3
 AB_MIN_RT_MS = 250
 AB_TIMEOUT_SEC = 15
@@ -361,35 +384,39 @@ def _balanced_lr_pairs(pairs: List[Tuple[dict,dict]], k: int) -> List[dict]:
                     "side_of_A": "L" if left["id"] == a["id"] else "R"})
     return out
 
-# ---- topic stats ----
+def _ensure_logs_dir():
+    _ensure_dir(LOG_DIR)
+
 def _load_topic_stats() -> dict:
     data = _read_json(TOPIC_STATS_PATH, {"items": {}, "total_impressions": 0})
     if not isinstance(data, dict): data = {"items": {}, "total_impressions": 0}
     data.setdefault("items", {}); data.setdefault("total_impressions", 0)
     return data
+
 def _save_topic_stats(d: dict):
     _write_json(TOPIC_STATS_PATH, d)
 
-# ---- segments ----
+# ========= セグメント管理 =========
 def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
-    return {
+    seg = {
         "segment_id": f"seg-{uuid.uuid4().hex[:12]}",
         "game_id": f"{room.code}-{room.round_no}",
         "prompt_id": prompt.get("id"),
         "prompt_text": prompt.get("text"),
         "genre": prompt.get("genre",""),
-        "answers": [],
+        "answers": [],             # {id,sid,name,text,ts}
         "skip_count": 0,
         "started_at": _utcnow_iso(),
         "ended_at": None
     }
+    return seg
 
 def _close_and_log_segment(room: Room):
     seg = room.current_segment
     if not seg: return
     if not seg.get("ended_at"):
         seg["ended_at"] = _utcnow_iso()
-    _ensure_dir(LOG_DIR)
+    _ensure_logs_dir()
     _log_append(SEGMENT_LOG_PATH, {
         "segment_id": seg["segment_id"],
         "game_id": seg["game_id"],
@@ -420,7 +447,7 @@ def _increment_topic_stats(prompt: dict, skipped: bool):
     stats["total_impressions"] = int(stats.get("total_impressions",0)) + 1
     _save_topic_stats(stats)
 
-# ---- round/battle ----
+# ========= ラウンド管理 =========
 def generate_room_code(n=4) -> str:
     while True:
         code = "".join(random.choices(string.ascii_uppercase, k=n))
@@ -469,14 +496,20 @@ def choose_prompt_for(room: Room):
 def start_round(room: Room, duration_sec: Optional[int], pick_new_prompt: bool):
     if pick_new_prompt or room.current_prompt is None:
         choose_prompt_for(room)
+
+    # セグメント初期化
     room.current_segment = _new_segment_for_prompt(room, room.current_prompt)
     room.completed_segments = []
+
+    # ラウンド共通状態
     room.answers={}
     room.last_submit_ts={}
     room.skip_votes=set()
     room.skip_lock=False
+
     now = time.time()
     room.round_end_ts = (now + duration_sec) if duration_sec else None
+
     socketio.emit("round_started", {
         "round_no": room.round_no,
         "mode": room.round_mode,
@@ -501,6 +534,10 @@ def start_overtime(room: Room):
     socketio.emit("overtime_started", {"note":"サドンデス！次の一本で決着","ends_at": room.round_end_ts,"server_now": now,"mode": room.round_mode}, room=room.code)
 
 def _select_ab_segment(room: Room) -> Optional[dict]:
+    """
+    直近で '回答者が2人以上' のセグメントを選ぶ。
+    current_segment と completed_segments を後ろから探索。
+    """
     cand = []
     if room.current_segment: cand.append(room.current_segment)
     cand.extend(reversed(room.completed_segments))
@@ -540,17 +577,21 @@ def decide_or_overtime(room: Room):
         room.status = "ended"
         socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
         try:
-            answers=[]
-            for sid0, arr in room.answers.items():
-                for a in arr:
-                    answers.append({"sid": sid0, "text": a["text"]})
-            if len(answers) >= 2:
-                answer_a, answer_b = answers[0]["text"], answers[1]["text"]
-                log_battle_result(image_src="", answer_a=answer_a, answer_b=answer_b,
-                                  votes_a=1, votes_b=0, winner="A",
-                                  extra={"room": room.code, "mode": room.round_mode, "reason": "match_end"})
-        except Exception as e:
-            print("[WARN] log_battle_result:", e)
+            winner_sid = sid
+            try:
+                answers=[]
+                for sid0, arr in room.answers.items():
+                    for a in arr:
+                        answers.append({"sid": sid0, "text": a["text"]})
+                if len(answers) >= 2:
+                    answer_a, answer_b = answers[0]["text"], answers[1]["text"]
+                    log_battle_result(image_src="", answer_a=answer_a, answer_b=answer_b,
+                                      votes_a=1, votes_b=0, winner="A",
+                                      extra={"room": room.code, "mode": room.round_mode, "reason": "match_end"})
+            except Exception as e:
+                print("[WARN] log_battle_result failed:", e)
+        except Exception:
+            pass
     else:
         start_overtime(room)
 
@@ -574,7 +615,7 @@ def maybe_finish_overtime(room: Room):
                                   votes_a=1, votes_b=0, winner="A",
                                   extra={"room": room.code, "mode": room.round_mode, "reason": "overtime_end"})
         except Exception as e:
-            print("[WARN] log_battle_result (ot):", e)
+            print("[WARN] log_battle_result failed (overtime):", e)
     else:
         room.status="ended"; socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code)
 
@@ -603,6 +644,7 @@ def _game_loop(room: "Room"):
     except Exception as e:
         print("[WARN] game_loop error:", e)
 
+# ---- お題変更（セグメント切替を含む） ----
 def change_prompt_same_mode(room: Room):
     if room.skip_lock: return
     room.skip_lock=True
@@ -634,29 +676,26 @@ def change_prompt_same_mode(room: Room):
             "ends_at": room.round_end_ts,
             "preload": []
         }, room=room.code)
+
         socketio.start_background_task(_tick_cooldown, room)
     finally:
         room.skip_lock=False
 
-# ---- routes ----
+# ========= ルート =========
 @app.route("/")
 def lobby():
     return render_template("lobby.html")
 
-@app.route("/duel/<room_id>")
-def duel(room_id):
-    name = request.args.get("name", "匿名")
-    return render_template("duel.html", room=room_id, name=name)
-
-@app.route("/health")
-def health():
-    return jsonify(ok=True, mode=OGIRI_MODE, threshold=SCORE_THRESHOLD, topic_source=TOPIC_SOURCE)
+@app.route("/duel/<code>")
+def duel_page(code):
+    # duel.html が部屋コード/名前をフロントで処理する想定
+    return render_template("duel.html")
 
 @app.route("/api/health")
 def api_health():
     return {"ok": True, "mode": OGIRI_MODE, "threshold": SCORE_THRESHOLD, "topic_source": TOPIC_SOURCE}
 
-# ---- sockets (connection/basic) ----
+# ========= Socket =========
 @socketio.on("connect")
 def on_connect():
     emit("connected", {"sid": request.sid})
@@ -674,56 +713,73 @@ def on_set_name(data):
     sid_to_name[request.sid] = name
     emit("name_set", {"sid": request.sid, "name": name})
 
-# ---- quick match (aliases for new lobby) ----
-def _broadcast_waiting_count():
-    try:
-        socketio.emit("waiting_count", {"count": len(quick_queue)})
-    except Exception:
-        pass
-
-@socketio.on("quick_match_join")
-def on_quick_match_join(_):
-    on_join_queue({})
-    _broadcast_waiting_count()
-
-@socketio.on("quick_match_cancel")
-def on_quick_match_cancel():
-    on_cancel_queue()
-    _broadcast_waiting_count()
+# ---- クイックマッチ（押した瞬間に部屋発行→本人を遷移） ----
+def _pop_live_waiting_room() -> Optional[str]:
+    """WAITINGで空きがある待機ルームを1つ返す。壊れていたら掃除。"""
+    while quick_wait_rooms:
+        code = quick_wait_rooms.pop(0)
+        room = rooms.get(code)
+        if room and room.status == "waiting" and len(room.members) < room.capacity:
+            return code
+    return None
 
 @socketio.on("join_queue")
 def on_join_queue(_):
-    global quick_queue
     name = sid_to_name.get(request.sid) or "匿名"
     cleanup_sid(request.sid)
-    quick_queue.append({"sid": request.sid, "name": name})
-    emit("queue_joined", {"sid": request.sid, "capacity": QUICK_CAPACITY})
-    _broadcast_waiting_count()
 
-    if len(quick_queue) >= QUICK_CAPACITY:
-        group = quick_queue[:QUICK_CAPACITY]; quick_queue = quick_queue[QUICK_CAPACITY:]
-        code = generate_room_code()
-        room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
-        for m in group:
-            join_room(code, sid=m["sid"])
-            room.members.append({"sid": m["sid"], "name": m["name"], "joined_at": datetime.utcnow().isoformat()})
-            sid_to_room[m["sid"]] = code
-            # 👇 ロビーに /duel へ飛ばす合図（各参加者へ個別に）
-            socketio.emit("quick_match_assigned", {"room": code}, to=m["sid"])
+    # 既存の待機ルームがあればそこに合流して即開始
+    code = _pop_live_waiting_room()
+    if code:
+        room = rooms.get(code)
+        if not room:
+            code = generate_room_code()
+            room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
+        join_room(code, sid=request.sid)
+        room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
+        sid_to_room[request.sid] = code
 
         socketio.emit("matched", room.to_public(), room=code)
         broadcast_room_update(room)
         start_battle(room)
-        _broadcast_waiting_count()
+        return
+
+    # 誰も待っていなければ、押した人専用の待機ルームを作成して入室
+    code = generate_room_code()
+    room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
+    join_room(code, sid=request.sid)
+    room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
+    sid_to_room[request.sid] = code
+
+    # 待機ルームとして登録し、本人へ「この部屋へ行ってね」を通知（ロビー側で即 /duel 遷移）
+    quick_wait_rooms.append(code)
+    socketio.emit("quick_match_assigned", {"room": code}, to=request.sid)
+
+    try:
+        socketio.emit("waiting_count", {"count": max(1, len(quick_wait_rooms))})
+    except Exception:
+        pass
 
 @socketio.on("cancel_queue")
 def on_cancel_queue():
-    global quick_queue
-    quick_queue = [x for x in quick_queue if x["sid"] != request.sid]
-    emit("queue_canceled", {})
-    _broadcast_waiting_count()
+    global quick_wait_rooms
+    # “自分ひとりだけが入っている待機ルーム”なら破棄
+    code = sid_to_room.get(request.sid)
+    if code:
+        room = rooms.get(code)
+        if room and room.status == "waiting" and len(room.members) == 1 and room.members[0]["sid"] == request.sid:
+            quick_wait_rooms = [c for c in quick_wait_rooms if c != code]
+            leave_room(code, sid=request.sid)
+            rooms.pop(code, None)
+            sid_to_room.pop(request.sid, None)
 
-# ---- room ----
+    emit("queue_canceled", {})
+    try:
+        socketio.emit("waiting_count", {"count": max(0, len(quick_wait_rooms))})
+    except Exception:
+        pass
+
+# ---- ルーム（手動作成/コード参加） ----
 @socketio.on("create_room")
 def on_create_room(data):
     cap = int((data or {}).get("capacity", 2)); cap = min(max(cap,2),5)
@@ -756,7 +812,7 @@ def on_join_room_code(data):
 def on_leave_room():
     cleanup_sid(request.sid)
 
-# ---- answers/scoring ----
+# ---- 回答/採点 ----
 @socketio.on("submit_answer")
 def on_submit_answer(data):
     code = sid_to_room.get(request.sid)
@@ -782,6 +838,7 @@ def on_submit_answer(data):
     rec = {"text": text, "ts": now, "seq": len(arr)+1, "id": ans_id, "sid": sid, "name": name}
     arr.append(rec)
 
+    # セグメントにも保存
     if room.current_segment is not None:
         seg_ans = dict(rec)
         room.current_segment["answers"].append(seg_ans)
@@ -811,7 +868,7 @@ def on_submit_answer(data):
 
     socketio.start_background_task(score_task, room, rec)
 
-# ---- skip vote ----
+# ---- お題変更投票 ----
 @socketio.on("skip_vote")
 def on_skip_vote():
     if not ALLOW_SKIP: return
@@ -829,7 +886,7 @@ def on_skip_vote():
     if len(room.skip_votes) >= required_votes(room):
         change_prompt_same_mode(room)
 
-# ---- AB ----
+# ---- AB評価フロー（セグメント準拠） ----
 @socketio.on("ab_request")
 def on_ab_request(_payload=None):
     sid = request.sid; code = sid_to_room.get(sid)
@@ -924,11 +981,12 @@ def on_ab_vote(data):
         "valid": bool(rt_ms >= AB_MIN_RT_MS),
         "voter_hash": sess["voter_hash"]
     }
-    _ensure_dir(LOG_DIR)
+    _ensure_logs_dir()
     _log_append(AB_LOG_PATH, row)
 
     prompt_obj = {"id": (sess.get("prompt") or {}).get("id")}
     prompt_obj.update({"text": (sess.get("prompt") or {}).get("text","")})
+
     enriched = {
         "segment_id": sess.get("segment_id"),
         "game_id": sess["game_id"],
@@ -948,8 +1006,8 @@ def on_ab_vote(data):
     sess["idx"] += 1
     _emit_next_pair(sid)
 
-# ---- main ----
+# ========= 実行 =========
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    _ensure_dir(LOG_DIR)
+    _ensure_logs_dir()
     socketio.run(app, host="0.0.0.0", port=port, debug=True)
