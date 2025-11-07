@@ -1,11 +1,5 @@
 # ogiri_duel.py
 # -*- coding: utf-8 -*-
-# ============================================================
-# Render（eventlet）対策：必ず最初に monkey_patch を呼ぶ
-# ============================================================
-import eventlet
-eventlet.monkey_patch()
-
 import os, re, json, time, random, string, math, hashlib, uuid
 from datetime import datetime, date, timezone
 from typing import Optional, Dict, Any, List, Set, Tuple
@@ -49,11 +43,11 @@ TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC"
 TOPIC_AI_TONE             = os.environ.get("OGIRI_TOPIC_AI_TONE", "standard")
 
 LOG_DIR = os.environ.get("OGIRI_LOG_DIR", "logs")
-SEGMENT_LOG_PATH = os.path.join(LOG_DIR, "segments.jsonl")
-SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")
-AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
-AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
-TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
+SEGMENT_LOG_PATH = os.path.join(LOG_DIR, "segments.jsonl")               # ★ 追加
+SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")               # 既存互換
+AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")               # 既存互換
+AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")      # 既存互換
+TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")             # 既存互換
 
 # ========= OpenAI =========
 def _make_openai_client():
@@ -75,9 +69,7 @@ def openai_available() -> bool:
 # ========= Flask / SocketIO =========
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "devkey")
-
-# async_mode は "eventlet"
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 
 # ========= ユーティリティ =========
 def _utcnow_iso() -> str:
@@ -318,7 +310,7 @@ class Room:
         # AB
         self.last_ab_snapshot=None
 
-        # セグメント管理
+        # セグメント管理（★ 新規）
         self.current_segment: Optional[dict] = None
         self.completed_segments: List[dict] = []
 
@@ -342,9 +334,7 @@ class Room:
 rooms: Dict[str, Room] = {}
 sid_to_room: Dict[str, str] = {}
 sid_to_name: Dict[str, str] = {}
-quick_queue: List[dict] = []  # 互換で残す
-# 追加：先に部屋を発行して待機させる方式
-quick_wait_rooms: List[str] = []
+quick_queue: List[dict] = []
 
 # ========= AB評価：サーバ内セッション =========
 AB_PAIRS_PER_USER = 3
@@ -396,7 +386,7 @@ def _load_topic_stats() -> dict:
 def _save_topic_stats(d: dict):
     _write_json(TOPIC_STATS_PATH, d)
 
-# ========= セグメント管理 =========
+# ========= セグメント管理（★） =========
 def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
     seg = {
         "segment_id": f"seg-{uuid.uuid4().hex[:12]}",
@@ -412,10 +402,12 @@ def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
     return seg
 
 def _close_and_log_segment(room: Room):
+    """現在のセグメントを終了し、segments.jsonlに追記（あれば）"""
     seg = room.current_segment
     if not seg: return
     if not seg.get("ended_at"):
         seg["ended_at"] = _utcnow_iso()
+    # ログ書き出し
     _ensure_logs_dir()
     _log_append(SEGMENT_LOG_PATH, {
         "segment_id": seg["segment_id"],
@@ -436,6 +428,7 @@ def _increment_topic_stats(prompt: dict, skipped: bool):
     items = stats["items"]
     key = _hash_norm(prompt.get("text",""))
     row = items.get(key, {"imp":0,"ewma_skip":0.3,"last":None,"text":prompt.get("text"),"genre":prompt.get("genre","")})
+    # EWMA（α=0.3）
     alpha=0.3
     new_ewma = (1-alpha)*row.get("ewma_skip",0.3) + alpha*(1.0 if skipped else 0.0)
     row["imp"] = int(row.get("imp",0)) + 1
@@ -497,7 +490,7 @@ def start_round(room: Room, duration_sec: Optional[int], pick_new_prompt: bool):
     if pick_new_prompt or room.current_prompt is None:
         choose_prompt_for(room)
 
-    # セグメント初期化
+    # セグメント初期化（★）
     room.current_segment = _new_segment_for_prompt(room, room.current_prompt)
     room.completed_segments = []
 
@@ -542,12 +535,14 @@ def _select_ab_segment(room: Room) -> Optional[dict]:
     if room.current_segment: cand.append(room.current_segment)
     cand.extend(reversed(room.completed_segments))
     for seg in cand:
+        # distinct sid が2以上
         sids = {a["sid"] for a in seg.get("answers", [])}
         if len(sids) >= 2:
             return seg
     return None
 
 def decide_or_overtime(room: Room):
+    # AB対象スナップショットは「セグメント」に紐付け（★）
     seg = _select_ab_segment(room)
     if seg:
         snapshot = {
@@ -564,6 +559,7 @@ def decide_or_overtime(room: Room):
 
     socketio.emit("round_ended", {"answers": sum(len(v) for v in room.answers.values())}, room=room.code)
 
+    # 勝敗
     leaders = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
     if not leaders:
         room.status = "ended"
@@ -578,7 +574,9 @@ def decide_or_overtime(room: Room):
         socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
         try:
             winner_sid = sid
+            # 簡易ロガー互換
             try:
+                # 代表的ABを一件拾う（既存loggerの互換インターフェース）
                 answers=[]
                 for sid0, arr in room.answers.items():
                     for a in arr:
@@ -605,6 +603,7 @@ def maybe_finish_overtime(room: Room):
         sid, w = leaders[0]; room.status="ended"
         socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
         try:
+            # 互換ロガー
             answers=[]
             for sid0, arr in room.answers.items():
                 for a in arr:
@@ -625,6 +624,7 @@ def _game_loop(room: "Room"):
             if room.status in ("ended","closed"): break
             now = time.time()
             if room.status=="playing" and room.round_end_ts and now >= room.round_end_ts:
+                # ラウンド終了時点のセグメントをクローズ＆ログ（★）
                 if room.current_segment and not room.current_segment.get("ended_at"):
                     room.current_segment["ended_at"] = _utcnow_iso()
                     _close_and_log_segment(room)
@@ -649,10 +649,13 @@ def change_prompt_same_mode(room: Room):
     if room.skip_lock: return
     room.skip_lock=True
     try:
+        # 現在セグメントを終了＆ログ（skip確定時点）
         if room.current_segment:
             room.current_segment["skip_count"] = room.current_segment.get("skip_count", 0) + 1
             room.current_segment["ended_at"] = _utcnow_iso()
+            # 統計（EWMA）更新：skip=true で1インクリメント
             _increment_topic_stats({"text": room.current_segment.get("prompt_text",""), "genre": room.current_segment.get("genre","")}, skipped=True)
+            # 旧互換ログ（skip）にも追記
             _log_append(SKIP_LOG_PATH, {
                 "ts": _utcnow_iso(),
                 "room": room.code,
@@ -663,6 +666,7 @@ def change_prompt_same_mode(room: Room):
             })
             _close_and_log_segment(room)
 
+        # 新しいお題でセグメント開始
         choose_prompt_for(room)
         room.current_segment = _new_segment_for_prompt(room, room.current_prompt)
         room.skip_votes=set()
@@ -683,12 +687,7 @@ def change_prompt_same_mode(room: Room):
 
 # ========= ルート =========
 @app.route("/")
-def lobby():
-    return render_template("lobby.html")
-
-@app.route("/duel/<code>")
-def duel_page(code):
-    # duel.html が部屋コード/名前をフロントで処理する想定
+def index():
     return render_template("duel.html")
 
 @app.route("/api/health")
@@ -713,73 +712,33 @@ def on_set_name(data):
     sid_to_name[request.sid] = name
     emit("name_set", {"sid": request.sid, "name": name})
 
-# ---- クイックマッチ（押した瞬間に部屋発行→本人を遷移） ----
-def _pop_live_waiting_room() -> Optional[str]:
-    """WAITINGで空きがある待機ルームを1つ返す。壊れていたら掃除。"""
-    while quick_wait_rooms:
-        code = quick_wait_rooms.pop(0)
-        room = rooms.get(code)
-        if room and room.status == "waiting" and len(room.members) < room.capacity:
-            return code
-    return None
-
+# ---- クイックマッチ ----
 @socketio.on("join_queue")
 def on_join_queue(_):
+    global quick_queue
     name = sid_to_name.get(request.sid) or "匿名"
     cleanup_sid(request.sid)
-
-    # 既存の待機ルームがあればそこに合流して即開始
-    code = _pop_live_waiting_room()
-    if code:
-        room = rooms.get(code)
-        if not room:
-            code = generate_room_code()
-            room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
-        join_room(code, sid=request.sid)
-        room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
-        sid_to_room[request.sid] = code
-
+    quick_queue.append({"sid": request.sid, "name": name})
+    emit("queue_joined", {"sid": request.sid, "capacity": QUICK_CAPACITY})
+    if len(quick_queue) >= QUICK_CAPACITY:
+        group = quick_queue[:QUICK_CAPACITY]; quick_queue = quick_queue[QUICK_CAPACITY:]
+        code = generate_room_code()
+        room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
+        for m in group:
+            join_room(code, sid=m["sid"])
+            room.members.append({"sid": m["sid"], "name": m["name"], "joined_at": datetime.utcnow().isoformat()})
+            sid_to_room[m["sid"]] = code
         socketio.emit("matched", room.to_public(), room=code)
         broadcast_room_update(room)
         start_battle(room)
-        return
-
-    # 誰も待っていなければ、押した人専用の待機ルームを作成して入室
-    code = generate_room_code()
-    room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
-    join_room(code, sid=request.sid)
-    room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
-    sid_to_room[request.sid] = code
-
-    # 待機ルームとして登録し、本人へ「この部屋へ行ってね」を通知（ロビー側で即 /duel 遷移）
-    quick_wait_rooms.append(code)
-    socketio.emit("quick_match_assigned", {"room": code}, to=request.sid)
-
-    try:
-        socketio.emit("waiting_count", {"count": max(1, len(quick_wait_rooms))})
-    except Exception:
-        pass
 
 @socketio.on("cancel_queue")
 def on_cancel_queue():
-    global quick_wait_rooms
-    # “自分ひとりだけが入っている待機ルーム”なら破棄
-    code = sid_to_room.get(request.sid)
-    if code:
-        room = rooms.get(code)
-        if room and room.status == "waiting" and len(room.members) == 1 and room.members[0]["sid"] == request.sid:
-            quick_wait_rooms = [c for c in quick_wait_rooms if c != code]
-            leave_room(code, sid=request.sid)
-            rooms.pop(code, None)
-            sid_to_room.pop(request.sid, None)
-
+    global quick_queue
+    quick_queue = [x for x in quick_queue if x["sid"] != request.sid]
     emit("queue_canceled", {})
-    try:
-        socketio.emit("waiting_count", {"count": max(0, len(quick_wait_rooms))})
-    except Exception:
-        pass
 
-# ---- ルーム（手動作成/コード参加） ----
+# ---- ルーム ----
 @socketio.on("create_room")
 def on_create_room(data):
     cap = int((data or {}).get("capacity", 2)); cap = min(max(cap,2),5)
@@ -832,15 +791,16 @@ def on_submit_answer(data):
     if room.status == "playing" and room.round_end_ts and now > room.round_end_ts:
         emit("answer_error", {"message": "締切後です。"}); return
 
+    # ラウンド全体の回答（重複ペナルティ／ボード用）
     sid, name = request.sid, sid_to_name.get(request.sid, "匿名")
     arr = room.answers.setdefault(sid, [])
     ans_id = f"{sid}:{len(arr)+1}"
     rec = {"text": text, "ts": now, "seq": len(arr)+1, "id": ans_id, "sid": sid, "name": name}
     arr.append(rec)
 
-    # セグメントにも保存
+    # セグメントにも保存（★）
     if room.current_segment is not None:
-        seg_ans = dict(rec)
+        seg_ans = dict(rec)  # shallow copy OK
         room.current_segment["answers"].append(seg_ans)
 
     emit("answer_accepted", {"text": text, "seq": len(arr)})
@@ -857,6 +817,7 @@ def on_submit_answer(data):
             "similar_to": dup["similar_to"], "threshold": SCORE_THRESHOLD, "comment": base.get("comment","")
         }, room=room_obj.code)
 
+        # スコアボード更新
         if rec_obj["sid"] in room_obj.board:
             if final_score >= SCORE_THRESHOLD:
                 room_obj.board[rec_obj["sid"]]["ippon"] += 1
@@ -968,6 +929,7 @@ def on_ab_vote(data):
     if pair["pair_id"] != pair_id:
         emit("ab_error", {"message": "pair_idが一致しません。"}); return
 
+    # 既存ログ（互換）—最小変更
     row = {
         "pair_id": pair_id,
         "game_id": sess["game_id"],
@@ -984,6 +946,7 @@ def on_ab_vote(data):
     _ensure_logs_dir()
     _log_append(AB_LOG_PATH, row)
 
+    # 強化版ログ（enriched）— ★ segment_id を必ず付与
     prompt_obj = {"id": (sess.get("prompt") or {}).get("id")}
     prompt_obj.update({"text": (sess.get("prompt") or {}).get("text","")})
 
@@ -1003,6 +966,7 @@ def on_ab_vote(data):
     }
     _log_append(AB_ENRICHED_PATH, enriched)
 
+    # 次ペアへ
     sess["idx"] += 1
     _emit_next_pair(sid)
 
