@@ -4,66 +4,208 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>大喜利デュエル</title>
+  <!-- 既存CSS（そのまま） -->
   <link rel="stylesheet" href="/static/css/style_duel.css" />
   <style>
-    /* ====== 既存の軽量スタイル（外部CSSが404でも最低限見えるように） ====== */
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto; margin: 0; background:#0f1115; color:#e6e6e6;}
-    header { padding:16px 20px; border-bottom:1px solid #2a2f3a; display:flex; align-items:center; justify-content:space-between;}
-    .title { font-weight:700; letter-spacing:0.5px; }
-    .container { max-width: 980px; margin: 24px auto; padding: 0 16px; }
-    .card { background:#141923; border:1px solid #222838; border-radius:16px; padding:16px; margin-bottom:16px; box-shadow:0 8px 20px rgba(0,0,0,0.25); }
-    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
-    input, select, button, textarea { background:#0f1420; color:#e6e6e6; border:1px solid #2a3042; border-radius:12px; padding:10px 12px; outline:none; }
-    button { cursor:pointer; }
-    button.primary { background:#2b5cff; border-color:#2b5cff; font-weight:700; }
-    button.ghost { background:transparent; }
-    .muted { color:#a0a5b3; font-size:12px; }
-    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-    .hidden { display:none !important; }
-    .pill { background:#1a2030; border:1px solid #2b3550; padding:6px 10px; border-radius:999px; font-size:12px; }
-    .list { display:flex; flex-direction:column; gap:8px; }
-    .member { display:flex; align-items:center; justify-content:space-between; background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px; }
-    .room-code { font-variant-numeric: tabular-nums; font-size:20px; letter-spacing:2px; }
-    textarea { width:100%; min-height: 84px; resize: vertical; }
-    .answer { background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px; }
-    .prompt-img { width:100%; border-radius:14px; border:1px solid #2b3550; max-height: 460px; object-fit: cover; background:#0e1320; }
-    .credit { margin-top:6px; font-size:12px; color:#9aa2b6; }
+    /* =========================================================
+       New Look（既存ID/構造は保持）— ダーク＋モダンUI
+       ========================================================= */
+    :root{
+      --bg: #0b0e14;
+      --bg-elev: #121826;
+      --card: #121623;
+      --card-2:#0f1420;
+      --line: #22293b;
+      --line-2:#2a3042;
+      --txt: #e8eaf0;
+      --txt-weak:#a8b0c2;
+      --accent:#3a63ff;
+      --accent-2:#2b5cff;
+      --pill:#1a2030;
+      --ok:#2ecc71;
+      --warn:#ffb020;
+      --danger:#ff5d5d;
+      --shadow: 0 10px 30px rgba(0,0,0,.35);
+      --radius: 16px;
+      --radius-lg: 18px;
+      --radius-sm: 10px;
+      --gap: 12px;
+    }
 
-    /* IPPON演出（score_animation.js用） */
-    .answer-item { position: relative; overflow: visible; }
-    .ippon-burst { position:absolute; inset:-8px -12px; display:grid; place-items:center; pointer-events:none; z-index:3;
-      font-weight:900; font-size: clamp(28px, 5.5vw, 56px); letter-spacing:.08em;
+    /* ====== Base ====== */
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji","Segoe UI Emoji";
+      color: var(--txt);
+      background:
+        radial-gradient(1200px 600px at 80% -10%, rgba(58,99,255,.12), transparent 55%),
+        radial-gradient(1000px 520px at -10% 10%, rgba(49,80,210,.10), transparent 60%),
+        var(--bg);
+      letter-spacing: .2px;
+    }
+
+    a { color: inherit; }
+
+    /* ====== Header ====== */
+    header{
+      position: sticky; top: 0; z-index: 10;
+      display:flex; align-items:center; justify-content:space-between;
+      padding:14px 18px;
+      background: linear-gradient(180deg, #0b0e14 0%, rgba(11,14,20,.85) 80%, rgba(11,14,20,.00));
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: saturate(1.1) blur(6px);
+    }
+    .brand{
+      display:flex; align-items:center; gap:10px; font-weight:800;
+      letter-spacing:.4px;
+    }
+    .logo-dot{
+      width:22px; height:22px; border-radius:50%;
+      background: radial-gradient(circle at 30% 30%, #fff 0 2px, transparent 2px) ,
+                  conic-gradient(from 120deg, #5e7bff, #4a64ff 30%, #2b5cff 55%, #6f8bff);
+      box-shadow: 0 6px 18px rgba(67,96,255,.5);
+      border:1px solid #6c83ff55;
+    }
+    .title{ font-size:16px; font-weight:800; }
+    .hdr-right{ display:flex; align-items:center; gap:10px; }
+    .pill { background: var(--pill); border:1px solid #2b3550; padding:6px 10px; border-radius:999px; font-size:12px; color:var(--txt-weak);}
+    .muted{ color: var(--txt-weak); font-size:12px; }
+
+    /* ====== Layout ====== */
+    .container{ max-width: 980px; margin: 20px auto 28px; padding: 0 16px; }
+    .section-title{ margin: 0 0 8px; font-size:22px; letter-spacing:.4px; }
+
+    /* ====== Card ====== */
+    .card{
+      background: linear-gradient(180deg, #131827, #111624);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: var(--shadow);
+      margin-bottom: 14px;
+    }
+    .subcard{ background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 12px; }
+    .row{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .list{ display:flex; flex-direction:column; gap:8px; }
+
+    /* ====== Form / Controls ====== */
+    input, select, button, textarea{
+      background: #0f1420;
+      color: var(--txt);
+      border:1px solid var(--line-2);
+      border-radius: 12px;
+      padding: 10px 12px;
+      outline: none;
+      transition: box-shadow .15s ease, border-color .15s ease, transform .04s ease;
+    }
+    input:focus, select:focus, textarea:focus{
+      border-color: #496aff;
+      box-shadow: 0 0 0 3px rgba(73,106,255,.22);
+    }
+    textarea{ width:100%; min-height: 92px; resize: vertical; }
+
+    button{ cursor:pointer; user-select:none; font-weight:700; }
+    button:hover{ transform: translateY(-1px); }
+    .primary{
+      background: linear-gradient(180deg, var(--accent), var(--accent-2));
+      border-color: #244dff;
+      color: white;
+      box-shadow: 0 6px 18px rgba(60,95,255,.35), inset 0 -6px 12px rgba(0,0,0,.18);
+    }
+    .primary:active{ transform: translateY(0); }
+    .ghost{ background: transparent; color: var(--txt); }
+    .danger{ background:#2a1012; border-color:#52252a; color:#ff8c8c; }
+
+    /* ====== Grids ====== */
+    .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    @media (max-width: 760px){
+      .grid{ grid-template-columns: 1fr; }
+      .hdr-right{ gap:8px; }
+      .container{ padding: 0 12px; }
+      .primary, .ghost, button{ width: 100%; }
+      #roomCodeInput, #nameInput, #capacitySelect{ flex:1; }
+    }
+
+    /* ====== Room / Members ====== */
+    .member{
+      display:flex; align-items:center; justify-content:space-between;
+      background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px;
+    }
+    .room-code{ font-variant-numeric: tabular-nums; font-size:22px; letter-spacing:2px; }
+
+    /* ====== Game ====== */
+    .prompt-img{
+      width:100%; border-radius:14px; border:1px solid #2b3550; max-height:460px; object-fit:cover; background:#0e1320;
+    }
+    .credit{ margin-top:6px; font-size:12px; color:#9aa2b6; }
+    .answer{ background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px; }
+
+    /* ====== Badges ====== */
+    .status-wait{ background:#16202f; border-color:#22324a; color:#b9c6e7; }
+    .status-live{ background:#0f2a1a; border-color:#1f5a38; color:#9be7b3; }
+    .status-overtime{ background:#2b1c0a; border-color:#5a3a16; color:#ffd08a; }
+
+    /* ====== Utility ====== */
+    .hidden{ display:none !important; }
+
+    /* ====== IPPON / Score Pop（既存JS用） ====== */
+    .answer-item{ position: relative; overflow: visible; }
+    .ippon-burst{
+      position:absolute; inset:-8px -12px; display:grid; place-items:center; pointer-events:none; z-index:3;
+      font-weight:900; font-size: clamp(28px, 5.6vw, 56px); letter-spacing:.08em;
+      color:#ffe27a; -webkit-text-stroke: 2px #8a5a00;
       text-shadow:0 2px 0 #000, 0 4px 12px rgba(0,0,0,.6);
+      filter: drop-shadow(0 8px 24px rgba(0,0,0,.45));
       animation: ippon-pop 900ms cubic-bezier(.2,1,.2,1) forwards;
-      filter: drop-shadow(0 8px 24px rgba(0,0,0,.45)); white-space:nowrap; user-select:none;
-      color:#ffe27a; -webkit-text-stroke: 2px #8a5a00; }
-    @keyframes ippon-pop { 0%{transform:scale(.4) rotate(-6deg);opacity:0}
+      white-space:nowrap; user-select:none;
+    }
+    @keyframes ippon-pop{
+      0%{transform:scale(.4) rotate(-6deg);opacity:0}
       18%{transform:scale(1.15) rotate(1.5deg);opacity:1}
       32%{transform:scale(1.0) rotate(0deg)}
       70%{opacity:1}
-      100%{transform:scale(.92) translateY(-6px);opacity:0} }
-    .score-pop { position:absolute; right:12px; top:-4px; z-index:2; padding:4px 8px; border-radius:10px; font-weight:700; font-variant-numeric:tabular-nums;
+      100%{transform:scale(.92) translateY(-6px);opacity:0}
+    }
+    .score-pop{
+      position:absolute; right:12px; top:-4px; z-index:2; padding:4px 8px; border-radius:10px; font-weight:700; font-variant-numeric:tabular-nums;
       background:#0b1220; border:1px solid #2a3658; color:#a9c1ff; box-shadow:0 6px 14px rgba(0,0,0,.3);
-      animation: score-pop-in 800ms cubic-bezier(.2,1,.2,1) forwards; }
-    @keyframes score-pop-in { 0%{transform:translateY(-6px) scale(.9);opacity:0}
+      animation: score-pop-in 800ms cubic-bezier(.2,1,.2,1) forwards;
+    }
+    @keyframes score-pop-in{
+      0%{transform:translateY(-6px) scale(.9);opacity:0}
       40%{transform:translateY(0) scale(1.05);opacity:1}
-      100%{transform:translateY(-6px) scale(1);opacity:0} }
+      100%{transform:translateY(-6px) scale(1);opacity:0}
+    }
 
     /* ====== AB評価モーダル ====== */
-    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:1000; }
-    .modal { position:fixed; inset:0; display:none; place-items:center; z-index:1001; }
-    .modal.show, .modal-backdrop.show { display:grid; }
-    .modal-card { width:min(980px, 96vw); background:#121623; border:1px solid #22293b; border-radius:18px; padding:16px; box-shadow: 0 20px 60px rgba(0,0,0,.55); }
-    .ab-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .ab-step { font-variant-numeric: tabular-nums; }
-    .ab-prompt { margin:8px 0 12px; font-size:16px; color:#c9cede; }
-    .ab-img { width:100%; border-radius:12px; border:1px solid #2b3550; max-height:360px; object-fit:cover; }
-    .ab-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
-    .ab-col { background:#0e1320; border:1px solid #222b42; border-radius:12px; padding:12px; }
-    .ab-col h4 { margin:0 0 6px; }
-    .ab-controls { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
-    .btn-tie { background:#263149; border-color:#263149; }
-    .x { cursor:pointer; font-size:18px; padding:8px 10px; border-radius:10px; background:#0f1420; border:1px solid #2a3042; }
+    .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:1000; }
+    .modal{ position:fixed; inset:0; display:none; place-items:center; z-index:1001; }
+    .modal.show, .modal-backdrop.show{ display:grid; }
+    .modal-card{
+      width:min(980px, 96vw);
+      background: linear-gradient(180deg, #131827, #111624);
+      border:1px solid var(--line);
+      border-radius: var(--radius-lg);
+      padding:16px;
+      box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    }
+    .ab-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .ab-step{ font-variant-numeric: tabular-nums; }
+    .ab-prompt{ margin:8px 0 12px; font-size:16px; color:#c9cede; }
+    .ab-img{ width:100%; border-radius:12px; border:1px solid #2b3550; max-height:360px; object-fit:cover; }
+    .ab-grid{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+    .ab-col{ background:#0e1320; border:1px solid #222b42; border-radius:12px; padding:12px; }
+    .ab-col h4{ margin:0 0 6px; }
+    .ab-controls{ display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
+    .btn-tie{ background:#263149; border-color:#263149; }
+    .x{ cursor:pointer; font-size:18px; padding:8px 10px; border-radius:10px; background:#0f1420; border:1px solid #2a3042; }
+
+    /* アニメ少なめ指定 */
+    @media (prefers-reduced-motion: reduce){
+      *{ animation: none !important; transition: none !important; }
+    }
   </style>
 
   <!-- socket.io（CDN→フォールバック） -->
@@ -84,18 +226,25 @@
   </script>
 </head>
 <body>
+  <!-- ====== Header ====== -->
   <header>
-    <div class="title">大喜利デュエル</div>
-    <div class="row">
-      <span class="muted">接続ID: <span id="mySid">-</span></span>
-      <label class="muted"><input id="seToggle" type="checkbox" checked style="vertical-align:middle;"/> SE</label>
+    <div class="brand">
+      <span class="logo-dot" aria-hidden="true"></span>
+      <div class="title">大喜利デュエル</div>
+    </div>
+    <div class="hdr-right">
+      <span class="pill">接続ID: <b id="mySid">-</b></span>
+      <label class="muted" style="display:flex;align-items:center;gap:6px;">
+        <input id="seToggle" type="checkbox" checked style="vertical-align:middle;"/> SE
+      </label>
     </div>
   </header>
 
   <main class="container">
-    <!-- ロビー -->
+    <!-- ====== ロビー ====== -->
     <section id="lobby" class="card">
-      <h2>ロビー</h2>
+      <h2 class="section-title">ロビー</h2>
+
       <div class="row" style="margin-top:8px;">
         <input id="nameInput" type="text" placeholder="プレイヤー名（例：けんじ）" />
         <select id="capacitySelect">
@@ -104,59 +253,60 @@
           <option value="4">4人対戦</option>
           <option value="5">5人対戦</option>
         </select>
-        <button id="saveNameBtn">名前をセット</button>
+        <button id="saveNameBtn" class="ghost">名前をセット</button>
       </div>
 
       <div class="grid" style="margin-top:16px;">
-        <div class="card">
-          <h3>クイックマッチ</h3>
-          <p class="muted">2人が揃い次第、自動でマッチング（固定）。</p>
+        <div class="subcard">
+          <h3 style="margin:0 0 6px;">クイックマッチ</h3>
+          <p class="muted" style="margin:0 0 8px;">2人が揃い次第、自動でマッチング（固定）。</p>
           <div class="row">
             <button id="joinQueueBtn" class="primary">クイックマッチ開始</button>
             <button id="cancelQueueBtn" class="ghost">取り消し</button>
-            <span id="queueStatus" class="pill">待機していません</span>
+            <span id="queueStatus" class="pill status-wait">待機していません</span>
           </div>
         </div>
 
-        <div class="card">
-          <h3>ルームコード</h3>
+        <div class="subcard">
+          <h3 style="margin:0 0 6px;">ルームコード</h3>
           <div class="row">
             <button id="createRoomBtn" class="primary">ルーム作成</button>
             <span class="muted"> or </span>
             <input id="roomCodeInput" type="text" placeholder="招待コード（ABCD）" style="text-transform:uppercase;" />
-            <button id="joinRoomBtn">参加</button>
+            <button id="joinRoomBtn" class="ghost">参加</button>
           </div>
           <p class="muted" style="margin-top:8px;">友だちと遊ぶときはルーム作成→コード共有→参加。</p>
         </div>
       </div>
     </section>
 
-    <!-- ルーム -->
+    <!-- ====== ルーム ====== -->
     <section id="roomCard" class="card hidden">
       <div class="row" style="justify-content:space-between;">
-        <h2>ルーム</h2>
+        <h2 class="section-title" style="margin:0;">ルーム</h2>
         <div class="row">
-          <span id="roomStatusPill" class="pill">waiting</span>
+          <span id="roomStatusPill" class="pill status-wait">waiting</span>
           <button id="leaveRoomBtn" class="ghost">退室</button>
         </div>
       </div>
 
-      <div style="margin-top:8px;">
-        <div>コード: <span id="roomCode" class="room-code">----</span> / 定員: <span id="roomCapacity">-</span></div>
+      <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
+        <div>コード: <span id="roomCode" class="room-code">----</span></div>
+        <div>定員: <span id="roomCapacity">-</span></div>
       </div>
 
       <div class="list" id="memberList" style="margin-top:12px;"></div>
       <div class="row" style="margin-top:12px;"><span id="roomMessage" class="muted"></span></div>
     </section>
 
-    <!-- ゲーム -->
+    <!-- ====== ゲーム ====== -->
     <section id="gameCard" class="card hidden">
       <div class="row" style="justify-content:space-between;">
-        <h2>本戦 <span id="roundNo">1</span></h2>
+        <h2 class="section-title" style="margin:0;">本戦 <span id="roundNo">1</span></h2>
         <span class="pill">残り <span id="countdown">--:--</span></span>
       </div>
 
-      <div id="suddenBanner" class="pill hidden">サドンデス：次の一本で勝利！</div>
+      <div id="suddenBanner" class="pill hidden status-overtime" style="margin-top:8px;">サドンデス：次の一本で勝利！</div>
 
       <div style="margin-top:8px;">
         <!-- 画像お題（DOMは残すが常に非表示にする想定） -->
@@ -167,6 +317,7 @@
       </div>
 
       <div class="row" style="margin-top:12px; align-items:flex-start;">
+        <!-- 左：自分の回答 -->
         <div style="flex:2; min-width:280px;">
           <textarea id="answerInput" placeholder="ここに書いて送信"></textarea>
           <div class="row" style="margin-top:8px;">
@@ -175,6 +326,7 @@
           <div id="myAnswers" class="list" style="margin-top:12px;"></div>
         </div>
 
+        <!-- 右：提出一覧＋スコア -->
         <div style="flex:1; min-width:260px;">
           <div class="row" style="justify-content:space-between; align-items:center;">
             <div class="muted">提出一覧（採点は即時表示）</div>
@@ -185,7 +337,7 @@
           </div>
           <div id="roundPanel" class="list" style="margin-top:8px;"></div>
 
-          <div class="card" style="margin-top:12px;">
+          <div class="subcard" style="margin-top:12px;">
             <div class="row" style="justify-content:space-between;">
               <b>スコアボード</b>
               <span class="muted">IPPON閾値: <b id="targetIppon">7.0</b></span>
@@ -236,6 +388,7 @@
     </div>
   </div>
 
+  <!-- 既存JS読み込み（変更なし） -->
   <script type="module" src="/static/js/score_animation.js"></script>
   <script type="module">
     function boot(){ import("/static/js/main.js"); }
