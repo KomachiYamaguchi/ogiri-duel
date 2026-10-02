@@ -130,6 +130,11 @@
       #roomCodeInput, #nameInput, #capacitySelect{ flex:1; }
     }
 
+    /* ====== Lobby Tabs ====== */
+    .lobby-tabs{ display:flex; gap:8px; }
+    .lobby-tab{ flex:1; background: transparent; color: var(--txt-weak); }
+    .lobby-tab.active{ background: var(--pill); border-color: #496aff; color: var(--txt); }
+
     /* ====== Room / Members ====== */
     .member{
       display:flex; align-items:center; justify-content:space-between;
@@ -258,8 +263,13 @@
         <button id="saveNameBtn" class="ghost">名前をセット</button>
       </div>
 
-      <div class="grid" style="margin-top:16px;">
-        <div class="subcard">
+      <div class="lobby-tabs" role="tablist" style="margin-top:16px;">
+        <button type="button" class="lobby-tab active" role="tab" aria-selected="true" data-tab-target="quickPanel">クイックマッチ</button>
+        <button type="button" class="lobby-tab" role="tab" aria-selected="false" data-tab-target="roomCodePanel">ルームコード</button>
+      </div>
+
+      <div style="margin-top:12px;">
+        <div id="quickPanel" class="subcard" role="tabpanel">
           <h3 style="margin:0 0 6px;">クイックマッチ</h3>
           <p class="muted" style="margin:0 0 8px;">2人が揃い次第、自動でマッチング（固定）。</p>
           <div class="row">
@@ -269,7 +279,7 @@
           </div>
         </div>
 
-        <div class="subcard">
+        <div id="roomCodePanel" class="subcard hidden" role="tabpanel">
           <h3 style="margin:0 0 6px;">ルームコード</h3>
           <div class="row">
             <button id="createRoomBtn" class="primary">ルーム作成</button>
@@ -389,6 +399,20 @@
       </div>
     </div>
   </div>
+
+  <!-- ロビーのタブ切り替え（表示/非表示のみ） -->
+  <script>
+    document.querySelectorAll(".lobby-tab").forEach(function(tab){
+      tab.addEventListener("click", function(){
+        document.querySelectorAll(".lobby-tab").forEach(function(t){
+          var on = (t === tab);
+          t.classList.toggle("active", on);
+          t.setAttribute("aria-selected", on ? "true" : "false");
+          document.getElementById(t.dataset.tabTarget).classList.toggle("hidden", !on);
+        });
+      });
+    });
+  </script>
 
   <!-- 既存JS読み込み（変更なし） -->
   <script type="module" src="/static/js/score_animation.js"></script>
