@@ -192,10 +192,18 @@ def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[st
         "・「電車で目の前の人がスマホでやっていた、地味に気になる行動とは？」\n"
         "お題の例（避けるべき、抽象的すぎる）: 「幸せについて」「面白いことを言ってください」\n"
         "\n"
-        "出力はJSON {items:[{text,genre}]} のみ。"
+        "疑問形で締める型（特に『〜なんて言った？』）を使う場合、空欄に入れる言葉は、実際に人が声に出して言えるもの（台詞、挨拶、言葉など）である必要があります。"
+        "マナー、気持ち、ルールのような、言葉にできない抽象的な概念を『〜なんて言った？』に当てはめないでください。"
+        "お題を作った後、日本語として意味が通っているか必ず確認してください。\n"
+        "\n"
+        "手順:\n"
+        "1. まず候補のお題を candidate_count 個作り、candidates に入れる\n"
+        "2. 候補を見直し、この中で日本語として意味が通っていて、かつ面白そうなものを count 個だけ選び、items に入れる\n"
+        "\n"
+        "出力はJSON {candidates:[{text,genre}], items:[{text,genre}]} のみ。"
     )}
     pref = prefer_genre or random.choice(GENRE_MASTER)
-    usr = {"role":"user","content": json.dumps({"count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
+    usr = {"role":"user","content": json.dumps({"candidate_count": batch * 2, "count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
     try:
         if OPENAI_SDK == "v1":
             resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8, response_format={"type":"json_object"})
@@ -203,7 +211,8 @@ def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[st
         else:
             resp = OPENAI_CLIENT.ChatCompletion.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8)
             out = resp["choices"][0]["message"]["content"]
-        data = json.loads(out or "{}"); items = data.get("items", [])
+        # AIが候補から選んだ items だけを使う（candidates は選定用で出力には使わない）
+        data = json.loads(out or "{}"); items = (data.get("items") or [])[:batch]
         result=[]
         for it in items:
             txt=(it or {}).get("text","").strip(); gen=(it or {}).get("genre","日常")
