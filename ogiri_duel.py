@@ -176,30 +176,9 @@ def _can_ai_generate_now() -> bool:
 
 def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[str, Any]]:
     if not openai_available(): return []
-    sys = {"role":"system","content":(
-        "あなたは日本語の大喜利のお題を作る、経験豊富な放送作家です。安全で短いお題を作ります。\n"
-        "良いお題の条件:\n"
-        "・具体的な状況やフックがあり、誰でもボケる方向を思いつきやすい\n"
-        "・ただし答え方は一通りに決まらず、回答者ごとに違う発想が出せる余地がある\n"
-        "・「楽しい一日について」のような抽象的すぎるお題は避ける\n"
-        "・「〇〇な理由を答えよ」のような、正解が1パターンしかないお題も避ける\n"
-        "・できるだけ「〜とは？」「〜、なんて言った？」のように疑問形で締めると回答しやすい\n"
-        "\n"
-        "お題の例（良いもの）:\n"
-        "・「宇宙人が地球に来て最初に覚えた日本語、なんて言った？」\n"
-        "・「コンビニの新商品、誰も頼まなかった理由とは？」\n"
-        "・「新入社員がやらかした、笑えない自己紹介とは？」\n"
-        "・「電車で目の前の人がスマホでやっていた、地味に気になる行動とは？」\n"
-        "お題の例（避けるべき、抽象的すぎる）: 「幸せについて」「面白いことを言ってください」\n"
-        "\n"
-        "手順:\n"
-        "1. まず候補のお題を candidate_count 個作り、candidates に入れる\n"
-        "2. 候補を見直し、この中で日本語として意味が通っていて、かつ面白そうなものを count 個だけ選び、items に入れる\n"
-        "\n"
-        "出力はJSON {candidates:[{text,genre}], items:[{text,genre}]} のみ。"
-    )}
+    sys = {"role":"system","content":"あなたは日本語の大喜利お題エディタです。安全で短いお題を作ります。出力はJSON {items:[{text,genre}]} のみ。"}
     pref = prefer_genre or random.choice(GENRE_MASTER)
-    usr = {"role":"user","content": json.dumps({"candidate_count": batch * 2, "count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
+    usr = {"role":"user","content": json.dumps({"count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
     try:
         if OPENAI_SDK == "v1":
             resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8, response_format={"type":"json_object"})
@@ -207,8 +186,7 @@ def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[st
         else:
             resp = OPENAI_CLIENT.ChatCompletion.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8)
             out = resp["choices"][0]["message"]["content"]
-        # AIが候補から選んだ items だけを使う（candidates は選定用で出力には使わない）
-        data = json.loads(out or "{}"); items = (data.get("items") or [])[:batch]
+        data = json.loads(out or "{}"); items = data.get("items", [])
         result=[]
         for it in items:
             txt=(it or {}).get("text","").strip(); gen=(it or {}).get("genre","日常")
