@@ -175,6 +175,16 @@ def _can_ai_generate_now() -> bool:
     if time.time() - _last_ai_gen_ts < TOPIC_AI_GEN_COOLDOWN_SEC: return False
     return True
 
+def _pick_genre_sequence(n: int, first: Optional[str] = None) -> List[str]:
+    # お題ごとのジャンルをランダムに選ぶ（重複は可、ただし同じジャンルが連続しない）
+    seq: List[str] = []
+    for i in range(n):
+        g = first if (i == 0 and first) else random.choice(GENRE_MASTER)
+        while seq and g == seq[-1] and len(GENRE_MASTER) > 1:
+            g = random.choice(GENRE_MASTER)
+        seq.append(g)
+    return seq
+
 def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[str, Any]]:
     if not openai_available(): return []
     sys = {"role":"system","content":(
@@ -195,8 +205,13 @@ def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[st
         "\n"
         "出力はJSON {items:[{text,genre}]} のみ。"
     )}
-    pref = prefer_genre or random.choice(GENRE_MASTER)
-    usr = {"role":"user","content": json.dumps({"count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
+    genres = _pick_genre_sequence(batch, prefer_genre)
+    usr = {"role":"user","content": json.dumps({
+        "count": batch,
+        "genres": genres,
+        "instruction": "それぞれのお題に、指定したジャンルを使ってください。items の i 番目のお題は genres の i 番目のジャンルで作り、genre にもそのジャンルを入れてください。",
+        "tone": "標準",
+    }, ensure_ascii=False)}
     try:
         if OPENAI_SDK == "v1":
             resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=[sys, usr], temperature=0.8, response_format={"type":"json_object"})
