@@ -176,7 +176,24 @@ def _can_ai_generate_now() -> bool:
 
 def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[str, Any]]:
     if not openai_available(): return []
-    sys = {"role":"system","content":"あなたは日本語の大喜利お題エディタです。安全で短いお題を作ります。出力はJSON {items:[{text,genre}]} のみ。"}
+    sys = {"role":"system","content":(
+        "あなたは日本語の大喜利のお題を作る、経験豊富な放送作家です。安全で短いお題を作ります。\n"
+        "良いお題の条件:\n"
+        "・具体的な状況やフックがあり、誰でもボケる方向を思いつきやすい\n"
+        "・ただし答え方は一通りに決まらず、回答者ごとに違う発想が出せる余地がある\n"
+        "・「楽しい一日について」のような抽象的すぎるお題は避ける\n"
+        "・「〇〇な理由を答えよ」のような、正解が1パターンしかないお題も避ける\n"
+        "・できるだけ「〜とは？」「〜、なんて言った？」のように疑問形で締めると回答しやすい\n"
+        "\n"
+        "お題の例（良いもの）:\n"
+        "・「宇宙人が地球に来て最初に覚えた日本語、なんて言った？」\n"
+        "・「コンビニの新商品、誰も頼まなかった理由とは？」\n"
+        "・「新入社員がやらかした、笑えない自己紹介とは？」\n"
+        "・「電車で目の前の人がスマホでやっていた、地味に気になる行動とは？」\n"
+        "お題の例（避けるべき、抽象的すぎる）: 「幸せについて」「面白いことを言ってください」\n"
+        "\n"
+        "出力はJSON {items:[{text,genre}]} のみ。"
+    )}
     pref = prefer_genre or random.choice(GENRE_MASTER)
     usr = {"role":"user","content": json.dumps({"count": batch, "preferred_genre": pref, "tone": "標準"}, ensure_ascii=False)}
     try:
