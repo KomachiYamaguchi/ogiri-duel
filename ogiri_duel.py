@@ -44,7 +44,7 @@ SKIP_MAJORITY   = float(os.environ.get("OGIRI_SKIP_MAJORITY", "0.5"))
 
 TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")  # static | ai | hybrid
 TOPIC_AI_BATCH            = int(os.environ.get("OGIRI_TOPIC_AI_BATCH", "12"))
-TOPIC_AI_MAX_DAILY        = int(os.environ.get("OGIRI_TOPIC_AI_MAX_DAILY", "100"))
+TOPIC_AI_MAX_DAILY        = int(os.environ.get("OGIRI_TOPIC_AI_MAX_DAILY", "500"))
 TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC", "30"))
 TOPIC_AI_TONE             = os.environ.get("OGIRI_TOPIC_AI_TONE", "standard")
 
@@ -161,6 +161,7 @@ used_hashes: Set[str] = set()
 _ai_daily_count = 0
 _ai_daily_ymd = date.today().isoformat()
 _last_ai_gen_ts = 0.0
+_last_ai_genre: Optional[str] = None
 
 def _reset_ai_daily_if_needed():
     global _ai_daily_count, _ai_daily_ymd
@@ -218,14 +219,18 @@ def _ai_generate_topics(batch: int, prefer_genre: Optional[str]) -> List[Dict[st
         return []
 
 def _enqueue_ai_topics():
-    global _ai_daily_count, _last_ai_gen_ts
+    global _ai_daily_count, _last_ai_gen_ts, _last_ai_genre
     if not _can_ai_generate_now(): return
-    got = _ai_generate_topics(TOPIC_AI_BATCH, None)
+    # 直前にキューへ追加したジャンルと同じなら再抽選（同じジャンルの連続を防ぐ）
+    genre = random.choice(GENRE_MASTER)
+    while genre == _last_ai_genre and len(GENRE_MASTER) > 1:
+        genre = random.choice(GENRE_MASTER)
+    got = _ai_generate_topics(TOPIC_AI_BATCH, genre)
     for it in got:
         topic_queue.append(it)
         used_hashes.add(_hash_norm(it["text"]))
     if got:
-        _ai_daily_count += len(got); _last_ai_gen_ts = time.time()
+        _ai_daily_count += len(got); _last_ai_gen_ts = time.time(); _last_ai_genre = genre
 
 def pick_text_prompt() -> Dict[str, Any]:
     # static only / ai only / hybrid
@@ -241,8 +246,8 @@ def pick_text_prompt() -> Dict[str, Any]:
             recent_topics_window.append((item["text"], item["genre"], time.time())); recent_topics_window[:] = recent_topics_window[-RECENT_WINDOW_SIZE:]
             return item
         return {"id": f"st-{random.randint(1000,9999)}","text":random.choice(STATIC_TOPICS),"genre":"日常","source":"static"}
-    # hybrid
-    if random.random() < 0.65:
+    # hybrid（固定リストはAIが使えない時の保険として5%だけ使う）
+    if random.random() < 0.95:
         if not topic_queue: _enqueue_ai_topics()
         if topic_queue:
             item = topic_queue.pop(0)
