@@ -34,7 +34,7 @@
 
     /* ====== Base ====== */
     * { box-sizing: border-box; }
-    html, body { height: 100%; }
+    html { height: 100%; }
     body {
       margin: 0;
       min-height: 100dvh;
@@ -75,7 +75,7 @@
     .muted{ color: var(--txt-weak); font-size:12px; }
 
     /* ====== Layout ====== */
-    .container{ max-width: 980px; margin: 20px auto 28px; padding: 0 16px; }
+    .container{ max-width: 980px; margin: 20px auto 28px; padding: 0 16px; display:flex; flex-direction:column; gap:14px; }
     .section-title{ margin: 0 0 8px; font-size:22px; letter-spacing:.4px; }
 
     /* ====== Card ====== */
@@ -85,7 +85,6 @@
       border-radius: var(--radius);
       padding: 16px;
       box-shadow: var(--shadow);
-      margin-bottom: 14px;
     }
     .subcard{ background: var(--card-2); border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 12px; }
     .row{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
@@ -106,6 +105,7 @@
       border-color: #496aff;
       box-shadow: 0 0 0 3px rgba(73,106,255,.22);
     }
+    input[type="checkbox"]{ padding:0; }
     textarea{ width:100%; min-height: 92px; resize: vertical; }
 
     button{ cursor:pointer; user-select:none; font-weight:700; }
