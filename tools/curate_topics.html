@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>お題キュレーション</title>
+  <style>
+    :root{
+      --bg:#0b0e14; --card:#121623; --card-2:#0f1420; --line:#22293b; --line-2:#2a3042;
+      --txt:#e8eaf0; --txt-weak:#a8b0c2; --accent:#3a63ff;
+      --ok:#2ecc71; --ok-bg:#0f2a1a; --ng:#ff5d5d; --ng-bg:#2a1012; --later:#ffb020; --later-bg:#2b1c0a;
+    }
+    * { box-sizing:border-box; }
+    body{
+      margin:0; min-height:100dvh; background:var(--bg); color:var(--txt);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", sans-serif;
+      display:flex; flex-direction:column;
+    }
+    header{
+      display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+      padding:12px 16px; border-bottom:1px solid var(--line);
+    }
+    h1{ margin:0; font-size:16px; }
+    .muted{ color:var(--txt-weak); font-size:13px; }
+    button, .file-btn{
+      font:inherit; font-size:16px; font-weight:700; color:var(--txt); cursor:pointer;
+      background:var(--card-2); border:1px solid var(--line-2); border-radius:12px; padding:10px 14px;
+    }
+    button:disabled{ opacity:.4; cursor:default; }
+    .file-btn input{ display:none; }
+    .primary{ background:var(--accent); border-color:var(--accent); color:#fff; }
+    main{ flex:1; width:100%; max-width:760px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:16px; }
+
+    .stats{ display:flex; gap:8px; flex-wrap:wrap; }
+    .stat{ background:var(--card); border:1px solid var(--line); border-radius:999px; padding:6px 12px; font-size:13px; color:var(--txt-weak); }
+    .stat b{ color:var(--txt); font-variant-numeric:tabular-nums; }
+    .bar{ height:6px; background:var(--card-2); border-radius:999px; overflow:hidden; }
+    .bar > div{ height:100%; width:0; background:var(--accent); transition:width .2s; }
+
+    .card{
+      flex:1; min-height:240px; display:flex; flex-direction:column; justify-content:center; gap:16px;
+      background:var(--card); border:1px solid var(--line); border-radius:18px; padding:28px 24px;
+    }
+    .genre{ align-self:flex-start; font-size:13px; color:var(--txt-weak); border:1px solid var(--line-2); border-radius:999px; padding:4px 10px; }
+    .topic{ font-size:clamp(22px, 5vw, 32px); font-weight:800; line-height:1.5; word-break:break-word; }
+    .flag{ font-size:13px; font-weight:700; }
+    .flag.later{ color:var(--later); }
+    .empty{ text-align:center; color:var(--txt-weak); line-height:1.8; }
+
+    .controls{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; }
+    .controls button{ padding:16px 8px; display:flex; flex-direction:column; align-items:center; gap:4px; }
+    .controls kbd{ font-size:12px; font-weight:400; color:var(--txt-weak); font-family:inherit; }
+    .btn-ng{ background:var(--ng-bg); border-color:#52252a; color:#ff8c8c; }
+    .btn-later{ background:var(--later-bg); border-color:#5a3a16; color:#ffd08a; }
+    .btn-ok{ background:var(--ok-bg); border-color:#1f5a38; color:#9be7b3; }
+    .sub-controls{ display:flex; gap:10px; flex-wrap:wrap; }
+    .sub-controls button{ flex:1; }
+    .hidden{ display:none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>お題キュレーション</h1>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <label class="file-btn">候補JSONを読み込む<input id="fileInput" type="file" accept=".json,application/json" /></label>
+      <button id="exportBtn" class="primary" disabled>採用分をJSONで書き出し</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="statsWrap" class="hidden" style="display:flex; flex-direction:column; gap:8px;">
+      <div class="stats">
+        <span class="stat"><b id="sPos">0</b> / <b id="sTotal">0</b> 個目</span>
+        <span class="stat">採用 <b id="sOk">0</b></span>
+        <span class="stat">不採用 <b id="sNg">0</b></span>
+        <span class="stat">あとで <b id="sLater">0</b></span>
+      </div>
+      <div class="bar"><div id="barFill"></div></div>
+    </div>
+
+    <section class="card" id="card">
+      <div class="empty" id="emptyMsg">
+        tools/out/topic_stock_candidates.json を読み込んでください。<br />
+        判定はこのブラウザに自動保存され、次に開いたときに続きから再開できます。
+      </div>
+      <span class="genre hidden" id="genre"></span>
+      <div class="topic hidden" id="topic"></div>
+      <div class="flag later hidden" id="laterFlag">あとで見る に回したお題です</div>
+    </section>
+
+    <div class="controls">
+      <button id="ngBtn" class="btn-ng" disabled>不採用<kbd>←</kbd></button>
+      <button id="laterBtn" class="btn-later" disabled>あとで<kbd>↑</kbd></button>
+      <button id="okBtn" class="btn-ok" disabled>採用<kbd>→</kbd></button>
+    </div>
+    <div class="sub-controls">
+      <button id="undoBtn" disabled>1つ戻る（Backspace）</button>
+      <button id="resetBtn" disabled>判定をリセット</button>
+    </div>
+  </main>
+
+  <script>
+    const STORE_KEY = "ogiri_curate_topics_v1";
+    const $ = (id) => document.getElementById(id);
+
+    // items: [{id,text,genre}] / decisions: {id: "ok"|"ng"|"later"}
+    // laterQueue: 「あとで」に回した順 / history: 戻る用 [{id, prev, prevLaterIdx}]
+    let S = null;
+    let override = null; // 「戻る」直後に表示するお題のid
+
+    function storageGet(){ try { return JSON.parse(localStorage.getItem(STORE_KEY) || "null"); } catch(e){ return null; } }
+    function storageSet(){ try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch(e){} }
+
+    function fingerprint(items){
+      return items.length + ":" + (items[0] && items[0].id) + ":" + (items[items.length-1] && items[items.length-1].id);
+    }
+
+    function current(){
+      if (!S) return null;
+      if (override) return S.items.find(it => it.id === override) || null;
+      const undecided = S.items.find(it => !S.decisions[it.id]);
+      if (undecided) return undecided;
+      const lid = S.laterQueue[0];
+      return lid ? S.items.find(it => it.id === lid) : null;
+    }
+
+    function counts(){
+      let ok=0, ng=0, later=0;
+      for (const v of Object.values(S.decisions)){ if (v==="ok") ok++; else if (v==="ng") ng++; else if (v==="later") later++; }
+      return {ok, ng, later};
+    }
+
+    function render(){
+      const loaded = !!S;
+      $("statsWrap").classList.toggle("hidden", !loaded);
+      $("exportBtn").disabled = !loaded || counts().ok === 0;
+      $("resetBtn").disabled = !loaded;
+      $("undoBtn").disabled = !loaded || S.history.length === 0;
+      if (!loaded) return;
+
+      const c = counts(), total = S.items.length, done = c.ok + c.ng;
+      const cur = current();
+      $("sTotal").textContent = total;
+      // 何個目: 判定済み＋「あとで」に回した数＋今のお題（「あとで」を見直し中なら二重に数えない）
+      const isLater = cur && S.decisions[cur.id] === "later";
+      $("sPos").textContent = cur ? Math.min(done + c.later + (isLater ? 0 : 1), total) : total;
+      $("sOk").textContent = c.ok; $("sNg").textContent = c.ng; $("sLater").textContent = c.later;
+      $("barFill").style.width = (total ? (done / total * 100) : 0) + "%";
+
+      for (const id of ["ngBtn","laterBtn","okBtn"]) $(id).disabled = !cur;
+      $("genre").classList.toggle("hidden", !cur);
+      $("topic").classList.toggle("hidden", !cur);
+      $("emptyMsg").classList.toggle("hidden", !!cur);
+      $("laterFlag").classList.toggle("hidden", !(cur && S.decisions[cur.id] === "later"));
+      if (cur){
+        $("genre").textContent = cur.genre || "ジャンルなし";
+        $("topic").textContent = cur.text;
+      } else {
+        $("emptyMsg").innerHTML = "すべて判定しました（採用 " + c.ok + " 件）。<br />「採用分をJSONで書き出し」で topic_stock.json を保存できます。";
+      }
+    }
+
+    function decide(kind){
+      const cur = current();
+      if (!cur) return;
+      const prevLaterIdx = S.laterQueue.indexOf(cur.id);
+      S.history.push({ id: cur.id, prev: S.decisions[cur.id] || null, prevLaterIdx });
+      if (S.history.length > 2000) S.history.shift();
+      if (prevLaterIdx >= 0) S.laterQueue.splice(prevLaterIdx, 1);
+      S.decisions[cur.id] = kind;
+      if (kind === "later") S.laterQueue.push(cur.id); // 何度「あとで」にしても列の最後へ
+      override = null;
+      storageSet(); render();
+    }
+
+    function undo(){
+      const h = S && S.history.pop();
+      if (!h) return;
+      const idx = S.laterQueue.indexOf(h.id);
+      if (idx >= 0) S.laterQueue.splice(idx, 1);
+      if (h.prevLaterIdx >= 0) S.laterQueue.splice(h.prevLaterIdx, 0, h.id);
+      if (h.prev) S.decisions[h.id] = h.prev; else delete S.decisions[h.id];
+      override = h.id;
+      storageSet(); render();
+    }
+
+    function load(items){
+      const fp = fingerprint(items);
+      const saved = storageGet();
+      if (saved && saved.fp === fp){
+        S = saved; S.items = items;
+      } else {
+        if (saved && Object.keys(saved.decisions || {}).length &&
+            !confirm("前回とは別の候補ファイルです。保存中の判定（" + Object.keys(saved.decisions).length + " 件）を破棄して新しく始めますか？")) return;
+        S = { fp, items, decisions: {}, laterQueue: [], history: [] };
+      }
+      override = null;
+      storageSet(); render();
+    }
+
+    $("fileInput").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      e.target.value = "";
+      if (!file) return;
+      file.text().then((txt) => {
+        let data;
+        try { data = JSON.parse(txt); } catch(err){ alert("JSONとして読めませんでした: " + err.message); return; }
+        if (!Array.isArray(data)) { alert("お題の配列 [{id, text, genre}, ...] の形式ではありません。"); return; }
+        const items = [], ids = new Set();
+        for (const it of data){
+          if (!it || typeof it.text !== "string" || !it.text.trim()) continue;
+          const id = String(it.id || it.text);
+          if (ids.has(id)) continue;
+          ids.add(id);
+          items.push({ id, text: it.text.trim(), genre: it.genre || "" });
+        }
+        if (!items.length) { alert("お題が1件も見つかりませんでした。"); return; }
+        load(items);
+      });
+    });
+
+    $("okBtn").addEventListener("click", () => decide("ok"));
+    $("ngBtn").addEventListener("click", () => decide("ng"));
+    $("laterBtn").addEventListener("click", () => decide("later"));
+    $("undoBtn").addEventListener("click", undo);
+    $("resetBtn").addEventListener("click", () => {
+      if (!S || !confirm("このファイルの判定をすべてリセットしますか？")) return;
+      S.decisions = {}; S.laterQueue = []; S.history = []; override = null;
+      storageSet(); render();
+    });
+
+    $("exportBtn").addEventListener("click", () => {
+      const out = S.items.filter(it => S.decisions[it.id] === "ok").map(it => ({ id: it.id, text: it.text, genre: it.genre }));
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "topic_stock.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (!S || e.ctrlKey || e.metaKey || e.altKey) return;
+      const map = { ArrowRight: () => decide("ok"), ArrowLeft: () => decide("ng"), ArrowUp: () => decide("later"), Backspace: undo };
+      if (map[e.key]) { e.preventDefault(); map[e.key](); }
+    });
+
+    // 前回の続きがあれば自動で再開
+    (function resume(){
+      const saved = storageGet();
+      if (saved && Array.isArray(saved.items) && saved.items.length){ S = saved; }
+      render();
+    })();
+  </script>
+</body>
+</html>
