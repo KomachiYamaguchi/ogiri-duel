@@ -42,7 +42,8 @@ ALLOW_SKIP      = os.environ.get("OGIRI_ALLOW_SKIP", "1") == "1"
 SKIP_COOLDOWN   = int(os.environ.get("OGIRI_SKIP_COOLDOWN", "20"))
 SKIP_MAJORITY   = float(os.environ.get("OGIRI_SKIP_MAJORITY", "0.5"))
 
-TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")  # static | ai | hybrid
+TOPIC_SOURCE              = os.environ.get("OGIRI_TOPIC_SOURCE", "hybrid")  # static | ai | hybrid | stock
+TOPIC_STOCK_PATH          = os.environ.get("OGIRI_TOPIC_STOCK_PATH", os.path.join("data", "topic_stock.json"))
 TOPIC_AI_BATCH            = int(os.environ.get("OGIRI_TOPIC_AI_BATCH", "12"))
 TOPIC_AI_MAX_DAILY        = int(os.environ.get("OGIRI_TOPIC_AI_MAX_DAILY", "500"))
 TOPIC_AI_GEN_COOLDOWN_SEC = int(os.environ.get("OGIRI_TOPIC_AI_GEN_COOLDOWN_SEC", "30"))
@@ -247,8 +248,55 @@ def _enqueue_ai_topics():
     if got:
         _ai_daily_count += len(got); _last_ai_gen_ts = time.time(); _last_ai_genre = genre
 
+# ========= お題ストック（選別済みの固定ファイル） =========
+def _load_topic_stock(path: str) -> List[Dict[str, Any]]:
+    """data/topic_stock.json（[{id,text,genre}]）を読み込む。読めない・空なら [] を返す。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"[WARN] topic stock not found: {path}")
+        return []
+    except Exception as e:
+        print(f"[WARN] topic stock could not be read: {path} ({e})")
+        return []
+    if not isinstance(data, list):
+        print(f"[WARN] topic stock is not a list: {path}")
+        return []
+    stock, seen = [], set()
+    for it in data:
+        if not isinstance(it, dict): continue
+        txt = str(it.get("text") or "").strip()
+        tid = str(it.get("id") or "").strip()
+        if not txt or not tid or tid in seen: continue
+        seen.add(tid)
+        stock.append({"id": tid, "text": txt, "genre": str(it.get("genre") or "日常"), "source": "stock"})
+    return stock
+
+TOPIC_STOCK: List[Dict[str, Any]] = []
+if TOPIC_SOURCE == "stock":
+    TOPIC_STOCK = _load_topic_stock(TOPIC_STOCK_PATH)
+    if TOPIC_STOCK:
+        print(f"[INFO] topic source: stock ({len(TOPIC_STOCK)} topics from {TOPIC_STOCK_PATH})")
+    else:
+        print("[WARN] topic stock is missing or empty; falling back to TOPIC_SOURCE=hybrid")
+        TOPIC_SOURCE = "hybrid"
+
+def _pick_stock_topic() -> Dict[str, Any]:
+    # 直近に出したお題（recent_topics_window）は避ける。ストックが少なくて全部直近なら、直前の1問だけ避ける
+    recent = {t for t, _, _ in recent_topics_window}
+    candidates = [it for it in TOPIC_STOCK if it["text"] not in recent]
+    if not candidates:
+        last = recent_topics_window[-1][0] if recent_topics_window else None
+        candidates = [it for it in TOPIC_STOCK if it["text"] != last] or TOPIC_STOCK
+    return dict(random.choice(candidates))
+
 def pick_text_prompt() -> Dict[str, Any]:
-    # static only / ai only / hybrid
+    # static only / ai only / hybrid / stock
+    if TOPIC_SOURCE == "stock":
+        item = _pick_stock_topic()
+        recent_topics_window.append((item["text"], item["genre"], time.time())); recent_topics_window[:] = recent_topics_window[-RECENT_WINDOW_SIZE:]
+        return item
     if TOPIC_SOURCE == "static":
         txt = random.choice(STATIC_TOPICS)
         item = {"id": f"st-{random.randint(1000,9999)}","text":txt,"genre":"日常","source":"static"}
@@ -500,6 +548,7 @@ def _increment_topic_stats(prompt: dict, skipped: bool):
     row["last"] = _utcnow_iso()
     row["text"] = prompt.get("text")
     row["genre"] = prompt.get("genre","")
+    if prompt.get("id"): row["id"] = prompt.get("id")  # お題ID（ストックなら固定ID）
     items[key] = row
     stats["total_impressions"] = int(stats.get("total_impressions",0)) + 1
     _save_topic_stats(stats)
@@ -718,7 +767,7 @@ def change_prompt_same_mode(room: Room):
             room.current_segment["skip_count"] = room.current_segment.get("skip_count", 0) + 1
             room.current_segment["ended_at"] = _utcnow_iso()
             # 統計（EWMA）更新：skip=true で1インクリメント
-            _increment_topic_stats({"text": room.current_segment.get("prompt_text",""), "genre": room.current_segment.get("genre","")}, skipped=True)
+            _increment_topic_stats({"id": room.current_segment.get("prompt_id"), "text": room.current_segment.get("prompt_text",""), "genre": room.current_segment.get("genre","")}, skipped=True)
             # 旧互換ログ（skip）にも追記
             _log_append(SKIP_LOG_PATH, {
                 "ts": _utcnow_iso(),
