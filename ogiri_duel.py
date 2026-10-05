@@ -64,7 +64,7 @@ if os.environ.get("DATABASE_URL", "").strip():
         from record_store import RecordStore
         RECORD_STORE = RecordStore(os.environ["DATABASE_URL"].strip())
     except Exception as e:
-        print(f"[ERROR] record store could not start; falling back to files in {LOG_DIR}: {type(e).__name__}: {e}")
+        print(f"[ERROR] record store could not start; falling back to files in {LOG_DIR}: {type(e).__name__}: {e}", flush=True)
         RECORD_STORE = None
 
 # ========= OpenAI =========

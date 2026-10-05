@@ -8,12 +8,16 @@
 - 書き込みは専用のワーカースレッド（eventlet 下ではグリーンスレッド）がキューから順に行う。
   データベースが遅い・落ちているときも、ゲームの処理は待たされない。失敗はログに出して捨てる
 - 必要な表は、最初に接続したときに無ければ作る
+- ログは print(..., flush=True) で出す。gunicorn の下では標準出力がパイプになり、
+  flush しないと溜まったまま表示されない（PCで PYTHONUNBUFFERED=1 を付けて試したときとの違い）
 """
 import json
+import os
 import queue
 import ssl
 import threading
 import time
+import traceback
 from typing import Any, Callable, Dict, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -122,19 +126,26 @@ def parse_database_url(url: str) -> Dict[str, Any]:
     }
 
 
+def _log(level: str, msg: str):
+    # pid を付けるのは、キューに積んだプロセスと書き込むスレッドのプロセスが同じか確かめるため
+    print(f"[{level}] record store (pid={os.getpid()}): {msg}", flush=True)
+
+
 class RecordStore:
     def __init__(self, database_url: str):
         self._params = parse_database_url(database_url)
+        self._lock = threading.Lock()
         self._q: "queue.Queue[Tuple[str, Callable, tuple]]" = queue.Queue(maxsize=QUEUE_MAX)
+        self._thread: Optional[threading.Thread] = None
+        self._thread_pid: Optional[int] = None
         self._conn = None
         self._schema_ready = False
         self._retry_at = 0.0
         p = self._params
-        print(f"[INFO] record store: Postgres {p['host']}:{p['port']}/{p['database']} (sslmode={p['_sslmode']})")
+        _log("INFO", f"Postgres {p['host']}:{p['port']}/{p['database']} (sslmode={p['_sslmode']})")
         if p["_ignored"]:
-            print(f"[WARN] record store: ignored DATABASE_URL options: {', '.join(p['_ignored'])}")
-        threading.Thread(target=self._worker, name="record-store", daemon=True).start()
-        self._submit("schema", lambda conn: None)  # 起動直後に接続して表を作る
+            _log("WARN", f"ignored DATABASE_URL options: {', '.join(p['_ignored'])}")
+        self._submit("schema", lambda conn: None)  # 起動直後に接続して表を作る（スレッドもここで起動する）
 
     # ---- 外から呼ぶ書き込み（すべてキューに積むだけで、すぐ戻る） ----
     def increment_topic_stat(self, key: str, prompt_id: Optional[str], text: str, genre: str, skipped: bool):
@@ -188,6 +199,7 @@ class RecordStore:
 
     def flush(self, timeout: float = 30.0) -> bool:
         """キューが空になるまで待つ（テスト・終了処理用）。"""
+        self._ensure_worker()
         end = time.time() + timeout
         while time.time() < end:
             if self._q.unfinished_tasks == 0:
@@ -196,11 +208,34 @@ class RecordStore:
         return False
 
     # ---- 内部 ----
+    def _ensure_worker(self):
+        """書き込み用スレッドが、今のプロセスで動いているようにする。
+        起動後に fork されたプロセス（gunicorn の --preload など）では、親で起動したスレッドは存在しない。
+        その場合はキューも作り直して、このプロセスでスレッドを起動する。止まっていた場合も起動し直す。"""
+        pid = os.getpid()
+        if self._thread is not None and self._thread_pid == pid and self._thread.is_alive():
+            return
+        with self._lock:
+            if self._thread is not None and self._thread_pid == pid and self._thread.is_alive():
+                return
+            if self._thread_pid is not None and self._thread_pid != pid:
+                _log("WARN", f"process changed since the writer thread was started (pid {self._thread_pid} -> {pid}); "
+                             "starting a new writer thread in this process")
+                self._q = queue.Queue(maxsize=QUEUE_MAX)
+                self._conn = None
+            elif self._thread is not None:
+                _log("ERROR", "writer thread was not running; starting it again")
+            self._thread = threading.Thread(target=self._worker, name="record-store", daemon=True)
+            self._thread_pid = pid
+            self._thread.start()
+
     def _submit(self, name: str, op: Callable):
+        self._ensure_worker()
         try:
             self._q.put_nowait((name, op, ()))
+            _log("INFO", f"queued {name} write (waiting: {self._q.qsize()})")
         except queue.Full:
-            print(f"[WARN] record store: queue full, dropped a {name} write")
+            _log("WARN", f"queue full, dropped a {name} write")
 
     def _connect(self):
         import pg8000.native
@@ -212,7 +247,7 @@ class RecordStore:
             for sql in SCHEMA_SQL:
                 conn.run(sql)
             self._schema_ready = True
-            print("[INFO] record store: tables ready")
+            _log("INFO", "tables ready")
         return conn
 
     def _close(self):
@@ -223,24 +258,46 @@ class RecordStore:
             pass
         self._conn = None
 
-    def _worker(self):
-        while True:
-            name, op, _ = self._q.get()
+    def _write_one(self, name: str, op: Callable):
+        if self._conn is None and time.time() < self._retry_at:
+            _log("ERROR", f"database unavailable, dropped a {name} write")
+            return
+        # 接続が切れていた（Neon のアイドル切断など）ときのため、失敗したら1回だけつなぎ直して再実行
+        for attempt in (1, 2):
+            t0 = time.time()
             try:
-                if self._conn is None and time.time() < self._retry_at:
-                    print(f"[ERROR] record store: database unavailable, dropped a {name} write")
-                    continue
-                # 接続が切れていた（Neon のアイドル切断など）ときのため、失敗したら1回だけつなぎ直して再実行
-                for attempt in (1, 2):
-                    try:
-                        if self._conn is None:
-                            self._conn = self._connect()
-                        op(self._conn)
-                        break
-                    except Exception as e:
-                        self._close()
-                        if attempt == 2:
-                            print(f"[ERROR] record store: {name} write failed: {type(e).__name__}: {e}")
-                            self._retry_at = time.time() + RETRY_AFTER_SEC
-            finally:
-                self._q.task_done()
+                if self._conn is None:
+                    self._conn = self._connect()
+                op(self._conn)
+                _log("INFO", f"wrote {name} ({(time.time() - t0) * 1000:.0f} ms)")
+                return
+            except Exception as e:
+                self._close()
+                if attempt == 1:
+                    _log("WARN", f"{name} write failed, reconnecting and retrying once: {type(e).__name__}: {e}")
+                else:
+                    _log("ERROR", f"{name} write failed: {type(e).__name__}: {e}")
+                    self._retry_at = time.time() + RETRY_AFTER_SEC
+
+    def _worker(self):
+        q = self._q  # このスレッドが受け持つキュー（プロセスが変わると作り直されるため、起動時のものを持つ）
+        _log("INFO", f"writer thread started ({threading.current_thread().name})")
+        try:
+            while True:
+                name, op, _ = q.get()
+                try:
+                    self._write_one(name, op)
+                except BaseException as e:
+                    # ここに来るのは想定外の例外（eventlet のタイムアウトなど Exception 以外も含む）。
+                    # 全部表示して、終了の合図でなければ次の書き込みへ進む（スレッドを黙って止めない）
+                    _log("ERROR", f"unexpected error in writer thread while writing {name}:\n{traceback.format_exc()}")
+                    self._close()  # 途中で止まった接続は状態が分からないので捨て、次の書き込みでつなぎ直す
+                    if isinstance(e, (SystemExit, KeyboardInterrupt)) or type(e).__name__ == "GreenletExit":
+                        raise
+                finally:
+                    q.task_done()
+        except BaseException:
+            _log("ERROR", f"writer thread is stopping because of:\n{traceback.format_exc()}")
+            raise
+        finally:
+            _log("INFO", "writer thread stopped")
