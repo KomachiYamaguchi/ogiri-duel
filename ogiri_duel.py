@@ -23,6 +23,8 @@ OGIRI_MODE = "text"  # 強制テキスト
 SCORE_THRESHOLD   = float(os.environ.get("OGIRI_THRESHOLD", "7.0"))
 BATTLE_SECONDS    = int(os.environ.get("OGIRI_SECONDS", "180"))
 OVERTIME_SECONDS  = int(os.environ.get("OGIRI_OVERTIME_SECONDS", "90"))
+# 時間切れのとき、締め切りまでに受け付けた回答の採点を待つ最大の秒数（待ったあとで勝敗を決める）
+JUDGE_SCORE_WAIT_SEC = float(os.environ.get("OGIRI_SCORE_WAIT_SEC", "10"))
 
 DUP_THRESH     = float(os.environ.get("OGIRI_DUP_THRESH", "0.76"))
 DUP_MAX        = float(os.environ.get("OGIRI_DUP_MAX", "6.0"))
@@ -437,6 +439,12 @@ class Room:
         self.went_overtime = False
         self.match_recorded = False              # 勝敗を記録済みか（二重記録の防止）
 
+        # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
+        self.pending_scores: Set[str] = set()    # 受け付けたが採点が終わっていない回答のID
+        self.uncounted_scores: Set[str] = set()  # 待ちきれず勝敗に入れないことにした回答のID
+        self.judging_phase: Optional[str] = None # 採点待ち中なら "round"（本戦の時間切れ）/ "overtime"（延長戦の時間切れ）
+        self.judge_deadline = 0.0
+
     def to_public(self):
         prompt_text = self.current_prompt.get("text") if isinstance(self.current_prompt, dict) else None
         return {
@@ -550,7 +558,7 @@ def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
     }
     return seg
 
-SCORE_WAIT_SEC = 30  # お題を閉じたとき、まだ終わっていない採点を待つ最大の秒数
+SEGMENT_SCORE_WAIT_SEC = 30  # お題の記録を閉じたとき、まだ終わっていない採点を待って保存を遅らせる最大の秒数
 
 def _segment_answer_row(a: dict) -> dict:
     sc = a.get("score") or {}
@@ -559,7 +567,9 @@ def _segment_answer_row(a: dict) -> dict:
             # AI採点の結果（採点が終わらなかった回答は scored=false で、点数は null）
             "scored": bool(sc),
             "score_raw": sc.get("score_raw"), "penalty": sc.get("penalty"), "score": sc.get("score"),
-            "ippon": sc.get("ippon"), "comment": sc.get("comment")}
+            "ippon": sc.get("ippon"), "comment": sc.get("comment"),
+            # 勝敗に入ったか（時間切れ後の採点待ちに間に合わなかった回答は false）
+            "counted": sc.get("counted")}
 
 def _write_segment(seg: dict):
     row = {
@@ -580,8 +590,8 @@ def _write_segment(seg: dict):
         _log_append(SEGMENT_LOG_PATH, row)
 
 def _write_segment_after_scoring(seg: dict):
-    # 採点は回答のあと裏で行うので、全部の採点が終わるまで（最大 SCORE_WAIT_SEC 秒）待ってから保存する
-    deadline = time.time() + SCORE_WAIT_SEC
+    # 採点は回答のあと裏で行うので、全部の採点が終わるまで（最大 SEGMENT_SCORE_WAIT_SEC 秒）待ってから保存する
+    deadline = time.time() + SEGMENT_SCORE_WAIT_SEC
     while time.time() < deadline and any("score" not in a for a in seg.get("answers", [])):
         socketio.sleep(0.5)
     _write_segment(seg)
@@ -660,8 +670,8 @@ def cleanup_sid(sid: str):
         seg = room.current_segment
         if seg and (seg.get("answers") or prev_status == "ended"):
             _close_and_log_segment(room)
-        # 試合の途中で全員が抜けたら、勝敗は「中断」として記録する（その時点の一本の数・点数を残す）
-        if prev_status in ("playing", "overtime"):
+        # 試合の途中（採点待ち中も含む）で全員が抜けたら、勝敗は「中断」として記録する（その時点の一本の数・点数を残す）
+        if prev_status in ("playing", "overtime", "judging"):
             _record_match_result(room, "abandoned", None, "all_left")
     else:
         if ALLOW_SKIP and room.status == "playing":
@@ -724,6 +734,7 @@ def start_battle(room: Room):
     room.match_started_at = _utcnow_iso()
     room.went_overtime = False
     room.match_recorded = False
+    room.pending_scores = set(); room.uncounted_scores = set(); room.judging_phase = None
     room.board ={m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
     start_round(room, BATTLE_SECONDS, pick_new_prompt=True)
@@ -747,6 +758,31 @@ def maybe_finish_overtime(room: Room):
     # 延長戦で一本が出たとき。単独首位がいればその人の勝ち、まだ並んでいれば引き分けで終了
     if room.status != "overtime": return
     _end_match(room, "overtime_ippon")
+
+def _start_judging(room: Room, phase: str) -> bool:
+    """時間切れのとき、採点が終わっていない回答があれば「採点中」にして待ち始める（待つなら True）。
+    採点中は、新しい回答もスキップも受け付けない。"""
+    if not room.pending_scores or JUDGE_SCORE_WAIT_SEC <= 0:
+        return False
+    room.status = "judging"
+    room.judging_phase = phase
+    room.judge_deadline = time.time() + JUDGE_SCORE_WAIT_SEC
+    socketio.emit("judging_started", {"phase": phase, "pending": len(room.pending_scores),
+                                      "wait_sec": JUDGE_SCORE_WAIT_SEC}, room=room.code)
+    return True
+
+def _finish_judging(room: Room) -> str:
+    """採点待ちを終える。待ちきれなかった採点は、あとで返ってきても勝敗に入れない。"""
+    phase = room.judging_phase or "round"
+    if room.pending_scores:
+        room.uncounted_scores |= room.pending_scores
+        print(f"[WARN] room {room.code}: {len(room.pending_scores)} score(s) not finished within "
+              f"{JUDGE_SCORE_WAIT_SEC:g}s; judging without them", flush=True)
+        # 勝敗に入れないと決めた回答は、もう待たない（延長戦の時間切れで、また待ち直さないように）
+        room.pending_scores.clear()
+    room.judging_phase = None
+    room.status = "playing" if phase == "round" else "overtime"  # このあとすぐ勝敗判定で ended / overtime になる
+    return phase
 
 def _sole_leader(room: Room) -> Optional[str]:
     """一本の数が一番多い人が1人だけなら、その人の sid を返す（点数の合計は勝敗に使わない）。"""
@@ -797,12 +833,23 @@ def _game_loop(room: "Room"):
                 # お題が最後まで出題された（スキップされなかった）ことを記録（記録済みなら何もしない）
                 _record_segment_topic_stats(room.current_segment, skipped=False)
                 # セグメントはここでは閉じない。延長戦に入ると同じお題で回答が続くので、試合終了時に閉じる（下の finally）
-                decide_or_overtime(room)
+                # 採点中の回答があれば、採点を待ってから勝敗を決める
+                if not _start_judging(room, "round"):
+                    decide_or_overtime(room)
             elif room.status=="overtime" and room.round_end_ts and now >= room.round_end_ts:
-                # 延長戦の時間切れ。単独首位がいればその人の勝ち、並んでいれば引き分け
-                _end_match(room, "overtime_timeup")
-                break
-            time.sleep(0.5)
+                # 延長戦の時間切れ。採点中の回答があれば待ってから、単独首位がいればその人の勝ち、並んでいれば引き分け
+                if not _start_judging(room, "overtime"):
+                    _end_match(room, "overtime_timeup")
+                    break
+            elif room.status=="judging" and (not room.pending_scores or now >= room.judge_deadline):
+                # 採点待ちが終わった（全部そろった or 待ちきれなかった）。ここで勝敗を1回だけ決める
+                phase = _finish_judging(room)
+                if phase == "round":
+                    decide_or_overtime(room)
+                else:
+                    _end_match(room, "overtime_timeup")
+                    break
+            time.sleep(0.2 if room.status == "judging" else 0.5)
     except Exception as e:
         print("[WARN] game_loop error:", e)
     finally:
@@ -944,7 +991,10 @@ def on_submit_answer(data):
     code = sid_to_room.get(request.sid)
     if not code: return
     room = rooms.get(code)
-    if not room or room.status not in ("playing","overtime"): return
+    if not room: return
+    if room.status == "judging":
+        emit("answer_error", {"message": "採点中です。結果が出るまでお待ちください。"}); return
+    if room.status not in ("playing","overtime"): return
 
     raw_text = (data or {}).get("text")
     text = (raw_text or "").strip()
@@ -975,31 +1025,42 @@ def on_submit_answer(data):
     socketio.emit("answer_submitted", {"sid": sid, "name": name, **rec}, room=room.code)
 
     def score_task(room_obj: Room, rec_obj: dict, seg_obj: Optional[dict]):
-        base = score_one(room_obj, rec_obj)
-        dup = dup_penalty_for(room_obj, rec_obj)
-        final_score = max(0.0, base["score_raw"] - dup["penalty"])
-        # お題の記録（segments）用に、この回答の採点結果を残す。お題がもう閉じていても、保存前なら反映される
-        if seg_obj is not None:
-            seg_obj["score"] = {"score_raw": round(float(base["score_raw"]), 2), "penalty": dup["penalty"],
-                                "score": round(float(final_score), 2), "ippon": final_score >= SCORE_THRESHOLD,
-                                "comment": base.get("comment","")}
+        try:
+            base = score_one(room_obj, rec_obj)
+            dup = dup_penalty_for(room_obj, rec_obj)
+            final_score = max(0.0, base["score_raw"] - dup["penalty"])
+            # 勝敗に入れるか：時間切れ後の採点待ちに間に合わなかった回答と、試合が終わったあとに返ってきた採点は入れない
+            counted = (rec_obj["id"] not in room_obj.uncounted_scores) and room_obj.status not in ("ended", "closed")
+            # ここから採点待ちの集合から外すまでは、途中で他の処理に切り替わらない（通信をしない）ようにして、
+            # 「スコアボードに足した」と「採点待ちが終わった」がずれないようにする
+            if seg_obj is not None:
+                # お題の記録（segments）用に、この回答の採点結果を残す。お題がもう閉じていても、保存前なら反映される
+                seg_obj["score"] = {"score_raw": round(float(base["score_raw"]), 2), "penalty": dup["penalty"],
+                                    "score": round(float(final_score), 2), "ippon": final_score >= SCORE_THRESHOLD,
+                                    "comment": base.get("comment",""), "counted": counted}
+            board_changed = False
+            if counted and rec_obj["sid"] in room_obj.board:
+                if final_score >= SCORE_THRESHOLD:
+                    room_obj.board[rec_obj["sid"]]["ippon"] += 1
+                room_obj.board[rec_obj["sid"]]["points"] = room_obj.board[rec_obj["sid"]].get("points", 0.0) + final_score
+                board_changed = True
+        finally:
+            room_obj.pending_scores.discard(rec_obj["id"])
 
         socketio.emit("score_one_ready", {
             "id": rec_obj["id"], "sid": rec_obj["sid"],
             "score_raw": base["score_raw"], "penalty": dup["penalty"], "score": final_score,
-            "similar_to": dup["similar_to"], "threshold": SCORE_THRESHOLD, "comment": base.get("comment","")
+            "similar_to": dup["similar_to"], "threshold": SCORE_THRESHOLD, "comment": base.get("comment",""),
+            "counted": counted
         }, room=room_obj.code)
-
-        # スコアボード更新
-        if rec_obj["sid"] in room_obj.board:
-            if final_score >= SCORE_THRESHOLD:
-                room_obj.board[rec_obj["sid"]]["ippon"] += 1
-            room_obj.board[rec_obj["sid"]]["points"] = room_obj.board[rec_obj["sid"]].get("points", 0.0) + final_score
+        if board_changed:
             socketio.emit("scoreboard_update", {"board": room_obj.board, "target": SCORE_THRESHOLD}, room=room_obj.code)
 
-        if final_score >= SCORE_THRESHOLD and room_obj.status == "overtime":
+        # 延長戦中の一本はその場で決着。採点待ち中（judging）は、待ちが終わったときに1回だけ判定する
+        if counted and final_score >= SCORE_THRESHOLD and room_obj.status == "overtime":
             maybe_finish_overtime(room_obj)
 
+    room.pending_scores.add(ans_id)
     socketio.start_background_task(score_task, room, rec, seg_ans)
 
 # ---- お題変更投票 ----

@@ -108,6 +108,7 @@
 
     button{ cursor:pointer; user-select:none; font-weight:700; }
     button:hover{ transform: translateY(-1px); }
+    button:disabled{ opacity:.45; cursor:not-allowed; transform:none; }
     .primary{
       background: linear-gradient(180deg, var(--accent), var(--accent-2));
       border-color: #244dff;
@@ -313,7 +314,7 @@
     <section id="gameCard" class="card hidden">
       <div class="row" style="justify-content:space-between;">
         <h2 class="section-title" style="margin:0;">本戦 <span id="roundNo">1</span></h2>
-        <span class="pill">残り <span id="countdown">--:--</span></span>
+        <span class="pill"><span id="countdownLabel">残り </span><span id="countdown">--:--</span></span>
       </div>
 
       <div id="suddenBanner" class="pill hidden status-overtime" style="margin-top:8px;">サドンデス：次の一本で勝利！</div>

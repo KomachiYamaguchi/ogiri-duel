@@ -222,9 +222,22 @@ socket.on("overtime_started", (p) => {
   show(suddenBanner, true);
   startCountdown(p.ends_at, p.server_now);
   if (skipBox) skipBox.style.display = "none"; // サドンデスはお題変更不可
+  if (submitAnswerBtn) submitAnswerBtn.disabled = false; // 採点待ちのあとで延長戦に入ったとき
+});
+
+/* 時間切れのあと、締め切りまでの回答の採点を待っている間（回答・お題変更はできない） */
+socket.on("judging_started", () => {
+  stopCountdown();
+  show($("countdownLabel"), false); // 「残り」を消して「採点中…」だけにする
+  if (countdownSpan) countdownSpan.textContent = "採点中…";
+  if (submitAnswerBtn) submitAnswerBtn.disabled = true;
+  if (skipBtn) skipBtn.disabled = true;
 });
 
 socket.on("match_over", ({ winner, board }) => {
+  stopCountdown();
+  show($("countdownLabel"), false);
+  if (countdownSpan) countdownSpan.textContent = "試合終了";
   renderBoard(board, null);
   const msg = winner ? `勝者：${winner.name}（${winner.ippon} 本 / ${winner.points.toFixed(1)}点）` : "引き分け";
   alert(msg);
@@ -252,6 +265,7 @@ socket.on("round_started", (payload) => {
   }
 
   startCountdown(payload.ends_at, payload.server_now);
+  if (submitAnswerBtn) submitAnswerBtn.disabled = false;
 
   // お題変更UI
   if (skipBox) {
@@ -405,6 +419,7 @@ function leaveToLobby() {
 /* ---------- カウントダウン ---------- */
 function startCountdown(endsAtServerTs, serverNowTs) {
   stopCountdown();
+  show($("countdownLabel"), true);
   if (!endsAtServerTs || !serverNowTs) return;
   const skew = Date.now()/1000 - (serverNowTs || Date.now()/1000);
   const tick = () => {
