@@ -475,26 +475,30 @@ def _answers_flat_list_from_segment(seg: dict) -> List[dict]:
         flat.append({"id": a["id"], "sid": a["sid"], "author": a.get("name") or sid_to_name.get(a["sid"],"匿名"), "text": a["text"]})
     return flat
 
-def _pair_candidates_from(snapshot: dict, exclude_sid: Optional[str]) -> List[Tuple[dict,dict]]:
-    ans = list(snapshot.get("answers", [])); pairs=[]; n=len(ans)
-    for i in range(n):
-        for j in range(i+1, n):
+def _pair_candidates_from(snapshot: dict, exclude_sid: Optional[str]) -> List[Tuple[dict,dict,bool]]:
+    """AB評価のペア候補 (a, b, same_author) を返す。投票する人の回答は入れない。
+    別々の人の回答どうしのペアを優先し、それが1つも作れないとき（2人のゲームなど）だけ、
+    同じ人の回答どうしのペアを使う。"""
+    ans = [a for a in snapshot.get("answers", []) if not (exclude_sid and a["sid"] == exclude_sid)]
+    cross, same = [], []
+    for i in range(len(ans)):
+        for j in range(i+1, len(ans)):
             a,b = ans[i], ans[j]
-            if a["sid"] == b["sid"]: continue
-            if exclude_sid and (a["sid"]==exclude_sid or b["sid"]==exclude_sid): continue
-            pairs.append((a,b))
+            (same if a["sid"] == b["sid"] else cross).append((a, b, a["sid"] == b["sid"]))
+    pairs = cross or same
     random.shuffle(pairs); return pairs
 
-def _balanced_lr_pairs(pairs: List[Tuple[dict,dict]], k: int) -> List[dict]:
+def _balanced_lr_pairs(pairs: List[Tuple[dict,dict,bool]], k: int) -> List[dict]:
     out=[]; left_count=0; right_count=0
-    for a,b in pairs:
+    for a,b,same_author in pairs:
         if len(out) >= k: break
         if left_count <= right_count: left,right = a,b; left_count += 1
         else: left,right = b,a; right_count += 1
         out.append({"pair_id": f"pair-{uuid.uuid4().hex[:12]}",
                     "left": {"id": left["id"], "text": left["text"], "author": left["author"]},
                     "right":{"id": right["id"],"text": right["text"],"author": right["author"]},
-                    "side_of_A": "L" if left["id"] == a["id"] else "R"})
+                    "side_of_A": "L" if left["id"] == a["id"] else "R",
+                    "same_author": same_author})
     return out
 
 def _ensure_logs_dir():
@@ -1042,7 +1046,7 @@ def on_ab_request(_payload=None):
         "mode": sess["mode"],
         "prompt": snapshot.get("prompt"),
         "image": None,
-        "total": AB_PAIRS_PER_USER
+        "total": len(chosen)  # 実際に出すペアの数（2人のゲームでは3より少ないことがある）
     })
     _emit_next_pair(sid)
 
@@ -1095,6 +1099,7 @@ def on_ab_vote(data):
         "left_id": pair["left"]["id"],
         "right_id": pair["right"]["id"],
         "side_of_A": pair["side_of_A"],
+        "same_author": bool(pair.get("same_author")),  # 同じ人の回答どうしのペアか
         "choice": choice,
         "rt_ms": rt_ms,
         "valid": bool(rt_ms >= AB_MIN_RT_MS),
@@ -1122,6 +1127,7 @@ def on_ab_vote(data):
         "prompt": prompt_obj,
         "left": {"id": pair["left"]["id"],"author": pair["left"].get("author",""),"text": pair["left"].get("text","")},
         "right": {"id": pair["right"]["id"],"author": pair["right"].get("author",""),"text": pair["right"].get("text","")},
+        "same_author": bool(pair.get("same_author")),  # 同じ人の回答どうしのペアか
         "ts": _utcnow_iso()
     }
     if RECORD_STORE:

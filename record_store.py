@@ -78,6 +78,9 @@ SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS ab_votes_enriched_segment_id_idx ON ab_votes_enriched (segment_id)",
     "CREATE INDEX IF NOT EXISTS ab_votes_enriched_prompt_id_idx ON ab_votes_enriched (prompt_id)",
     "CREATE INDEX IF NOT EXISTS ab_votes_enriched_ts_idx ON ab_votes_enriched (ts)",
+    # 同じ人の回答どうしのペアか（2人のゲーム用）。既にある表にも足す。古い行は NULL のまま
+    "ALTER TABLE ab_votes ADD COLUMN IF NOT EXISTS same_author boolean",
+    "ALTER TABLE ab_votes_enriched ADD COLUMN IF NOT EXISTS same_author boolean",
 ]
 
 
@@ -181,20 +184,21 @@ class RecordStore:
     def insert_ab_vote(self, row: Dict[str, Any]):
         def op(conn):
             conn.run(
-                """INSERT INTO ab_votes (pair_id, game_id, prompt_id, choice, valid, data)
-                   VALUES (:pair, :gid, :pid, :choice, :valid, CAST(:data AS jsonb))""",
+                """INSERT INTO ab_votes (pair_id, game_id, prompt_id, choice, valid, same_author, data)
+                   VALUES (:pair, :gid, :pid, :choice, :valid, :same, CAST(:data AS jsonb))""",
                 pair=row.get("pair_id"), gid=row.get("game_id"), pid=row.get("prompt_or_image_id"),
-                choice=row.get("choice"), valid=row.get("valid"), data=json.dumps(row, ensure_ascii=False))
+                choice=row.get("choice"), valid=row.get("valid"), same=row.get("same_author"),
+                data=json.dumps(row, ensure_ascii=False))
         self._submit("ab_votes", op)
 
     def insert_ab_vote_enriched(self, row: Dict[str, Any]):
         def op(conn):
             conn.run(
-                """INSERT INTO ab_votes_enriched (ts, segment_id, game_id, pair_id, prompt_id, choice, valid, data)
-                   VALUES (CAST(:ts AS timestamptz), :seg, :gid, :pair, :pid, :choice, :valid, CAST(:data AS jsonb))""",
+                """INSERT INTO ab_votes_enriched (ts, segment_id, game_id, pair_id, prompt_id, choice, valid, same_author, data)
+                   VALUES (CAST(:ts AS timestamptz), :seg, :gid, :pair, :pid, :choice, :valid, :same, CAST(:data AS jsonb))""",
                 ts=row.get("ts"), seg=row.get("segment_id"), gid=row.get("game_id"), pair=row.get("pair_id"),
                 pid=(row.get("prompt") or {}).get("id"), choice=row.get("choice"), valid=row.get("valid"),
-                data=json.dumps(row, ensure_ascii=False))
+                same=row.get("same_author"), data=json.dumps(row, ensure_ascii=False))
         self._submit("ab_votes_enriched", op)
 
     def flush(self, timeout: float = 30.0) -> bool:
