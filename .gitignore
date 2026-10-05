@@ -1,3 +1,4 @@
 __pycache__/
 *.pyc
 tools/out/
+data/topic_stock.backup.json

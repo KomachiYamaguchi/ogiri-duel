@@ -453,10 +453,12 @@ socket.on("ab_session_start", ({ game_id, mode, prompt, image, total }) => {
 });
 
 /* サーバ：ペア提示 */
-socket.on("ab_offer", ({ pair_id, left, right, meta }) => {
+socket.on("ab_offer", ({ pair_id, left, right, prompt, meta }) => {
   abCurrent.pairId = pair_id;
   abCurrent.step = meta?.step || (abCurrent.step + 1);
   abStep.textContent = `${abCurrent.step} / ${abCurrent.total}`;
+  // ペアごとにお題が変わることがあるので、毎回そのペアのお題を表示する
+  if (prompt) abPromptWrap.textContent = (prompt.text || "").trim();
 
   abLeftText.textContent = left?.text || "—";
   abRightText.textContent = right?.text || "—";

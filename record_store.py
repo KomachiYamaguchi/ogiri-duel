@@ -81,6 +81,9 @@ SCHEMA_SQL = [
     # 同じ人の回答どうしのペアか（2人のゲーム用）。既にある表にも足す。古い行は NULL のまま
     "ALTER TABLE ab_votes ADD COLUMN IF NOT EXISTS same_author boolean",
     "ALTER TABLE ab_votes_enriched ADD COLUMN IF NOT EXISTS same_author boolean",
+    # ペアごとの区切りID（AB評価のペアを試合の全お題から作るようになったため）。古い行は NULL のまま
+    "ALTER TABLE ab_votes ADD COLUMN IF NOT EXISTS segment_id text",
+    "CREATE INDEX IF NOT EXISTS ab_votes_segment_id_idx ON ab_votes (segment_id)",
 ]
 
 
@@ -184,9 +187,9 @@ class RecordStore:
     def insert_ab_vote(self, row: Dict[str, Any]):
         def op(conn):
             conn.run(
-                """INSERT INTO ab_votes (pair_id, game_id, prompt_id, choice, valid, same_author, data)
-                   VALUES (:pair, :gid, :pid, :choice, :valid, :same, CAST(:data AS jsonb))""",
-                pair=row.get("pair_id"), gid=row.get("game_id"), pid=row.get("prompt_or_image_id"),
+                """INSERT INTO ab_votes (pair_id, game_id, segment_id, prompt_id, choice, valid, same_author, data)
+                   VALUES (:pair, :gid, :seg, :pid, :choice, :valid, :same, CAST(:data AS jsonb))""",
+                pair=row.get("pair_id"), gid=row.get("game_id"), seg=row.get("segment_id"), pid=row.get("prompt_or_image_id"),
                 choice=row.get("choice"), valid=row.get("valid"), same=row.get("same_author"),
                 data=json.dumps(row, ensure_ascii=False))
         self._submit("ab_votes", op)
@@ -237,7 +240,6 @@ class RecordStore:
         self._ensure_worker()
         try:
             self._q.put_nowait((name, op, ()))
-            _log("INFO", f"queued {name} write (waiting: {self._q.qsize()})")
         except queue.Full:
             _log("WARN", f"queue full, dropped a {name} write")
 
@@ -268,12 +270,10 @@ class RecordStore:
             return
         # 接続が切れていた（Neon のアイドル切断など）ときのため、失敗したら1回だけつなぎ直して再実行
         for attempt in (1, 2):
-            t0 = time.time()
             try:
                 if self._conn is None:
                     self._conn = self._connect()
                 op(self._conn)
-                _log("INFO", f"wrote {name} ({(time.time() - t0) * 1000:.0f} ms)")
                 return
             except Exception as e:
                 self._close()

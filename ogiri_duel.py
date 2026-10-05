@@ -430,9 +430,6 @@ class Room:
         self.skip_lock=False
         self.last_submit_ts: Dict[str, float] = {}
 
-        # AB
-        self.last_ab_snapshot=None
-
         # セグメント管理（★ 新規）
         self.current_segment: Optional[dict] = None
         self.completed_segments: List[dict] = []
@@ -475,22 +472,42 @@ def _answers_flat_list_from_segment(seg: dict) -> List[dict]:
         flat.append({"id": a["id"], "sid": a["sid"], "author": a.get("name") or sid_to_name.get(a["sid"],"匿名"), "text": a["text"]})
     return flat
 
-def _pair_candidates_from(snapshot: dict, exclude_sid: Optional[str]) -> List[Tuple[dict,dict,bool]]:
-    """AB評価のペア候補 (a, b, same_author) を返す。投票する人の回答は入れない。
-    別々の人の回答どうしのペアを優先し、それが1つも作れないとき（2人のゲームなど）だけ、
-    同じ人の回答どうしのペアを使う。"""
-    ans = [a for a in snapshot.get("answers", []) if not (exclude_sid and a["sid"] == exclude_sid)]
+def _pair_candidates_from(seg: dict, exclude_sid: Optional[str]) -> Tuple[List[tuple], List[tuple]]:
+    """1つのお題（区切り）の回答から、AB評価のペア候補を (別々の人どうし, 同じ人どうし) に分けて返す。
+    投票する人の回答は入れない。各候補は (a, b, same_author, seg)。"""
+    ans = [a for a in _answers_flat_list_from_segment(seg) if not (exclude_sid and a["sid"] == exclude_sid)]
     cross, same = [], []
     for i in range(len(ans)):
         for j in range(i+1, len(ans)):
             a,b = ans[i], ans[j]
-            (same if a["sid"] == b["sid"] else cross).append((a, b, a["sid"] == b["sid"]))
-    pairs = cross or same
-    random.shuffle(pairs); return pairs
+            (same if a["sid"] == b["sid"] else cross).append((a, b, a["sid"] == b["sid"], seg))
+    return cross, same
 
-def _balanced_lr_pairs(pairs: List[Tuple[dict,dict,bool]], k: int) -> List[dict]:
+def _ab_segments(room: "Room") -> List[dict]:
+    """試合のすべてのお題（区切り）。試合終了直後でまだ閉じていない区切り（延長戦の回答を含む）も入れる。"""
+    segs = list(room.completed_segments)
+    if room.current_segment and all(s is not room.current_segment for s in segs):
+        segs.append(room.current_segment)
+    return segs
+
+def _choose_ab_pairs(room: "Room", voter_sid: str, k: int) -> List[tuple]:
+    """試合のすべてのお題からペアを最大 k 個選ぶ。ペアの2つの回答は必ず同じお題のもの。
+    別々の人の回答どうしを優先し、足りないときだけ同じ人の回答どうしで埋める。
+    どちらも、お題を順番に回して1つずつ取り、いろいろなお題から出るようにする。"""
+    by_seg = [_pair_candidates_from(seg, voter_sid) for seg in _ab_segments(room)]
+    out: List[tuple] = []
+    for kind in (0, 1):  # 0: 別々の人どうし, 1: 同じ人どうし
+        groups = [list(g[kind]) for g in by_seg if g[kind]]
+        random.shuffle(groups)
+        for g in groups: random.shuffle(g)
+        while len(out) < k and any(groups):
+            for g in groups:
+                if g and len(out) < k: out.append(g.pop())
+    return out
+
+def _balanced_lr_pairs(pairs: List[tuple], k: int) -> List[dict]:
     out=[]; left_count=0; right_count=0
-    for a,b,same_author in pairs:
+    for a,b,same_author,seg in pairs:
         if len(out) >= k: break
         if left_count <= right_count: left,right = a,b; left_count += 1
         else: left,right = b,a; right_count += 1
@@ -498,7 +515,10 @@ def _balanced_lr_pairs(pairs: List[Tuple[dict,dict,bool]], k: int) -> List[dict]
                     "left": {"id": left["id"], "text": left["text"], "author": left["author"]},
                     "right":{"id": right["id"],"text": right["text"],"author": right["author"]},
                     "side_of_A": "L" if left["id"] == a["id"] else "R",
-                    "same_author": same_author})
+                    "same_author": same_author,
+                    # ペアごとのお題（区切り）。お題がペアごとに変わるので、画面と記録はここを使う
+                    "segment_id": seg["segment_id"],
+                    "prompt": {"id": seg.get("prompt_id"), "text": seg.get("prompt_text",""), "genre": seg.get("genre","")}})
     return out
 
 def _ensure_logs_dir():
@@ -683,37 +703,8 @@ def start_overtime(room: Room):
     room.status="overtime"; now = time.time(); room.round_end_ts = now + OVERTIME_SECONDS
     socketio.emit("overtime_started", {"note":"サドンデス！次の一本で決着","ends_at": room.round_end_ts,"server_now": now,"mode": room.round_mode}, room=room.code)
 
-def _select_ab_segment(room: Room) -> Optional[dict]:
-    """
-    直近で '回答者が2人以上' のセグメントを選ぶ。
-    current_segment と completed_segments を後ろから探索。
-    """
-    cand = []
-    if room.current_segment: cand.append(room.current_segment)
-    cand.extend(reversed(room.completed_segments))
-    for seg in cand:
-        # distinct sid が2以上
-        sids = {a["sid"] for a in seg.get("answers", [])}
-        if len(sids) >= 2:
-            return seg
-    return None
-
 def decide_or_overtime(room: Room):
-    # AB対象スナップショットは「セグメント」に紐付け（★）
-    seg = _select_ab_segment(room)
-    if seg:
-        snapshot = {
-            "segment_id": seg["segment_id"],
-            "game_id": seg["game_id"],
-            "mode": "text",
-            "prompt": {"id": seg["prompt_id"], "text": seg["prompt_text"], "genre": seg.get("genre","")},
-            "prompt_or_img_id": seg["prompt_id"],
-            "answers": _answers_flat_list_from_segment(seg)
-        }
-        room.last_ab_snapshot = snapshot
-    else:
-        room.last_ab_snapshot = None
-
+    # AB評価のペアは、ここ（ラウンド終了時）ではなく、試合終了後の ab_request で全お題から作る
     socketio.emit("round_ended", {"answers": sum(len(v) for v in room.answers.values())}, room=room.code)
 
     # 勝敗
@@ -1015,28 +1006,22 @@ def on_ab_request(_payload=None):
     if not code: emit("ab_error", {"message": "ルーム外です。"}); return
     room = rooms.get(code)
     if not room: emit("ab_error", {"message": "ルームが存在しません。"}); return
-    if not room.last_ab_snapshot:
-        emit("ab_error", {"message": "AB対象のラウンドがありません。"}); return
+    # 試合の途中（本戦・延長戦）では受け付けない。延長戦の回答も含めて、試合が終わった時点の回答でペアを作るため
+    if room.status != "ended":
+        emit("ab_error", {"message": "試合が終わってから評価できます。"}); return
 
-    snapshot = room.last_ab_snapshot
-    pairs = _pair_candidates_from(snapshot, exclude_sid=sid)
-    if not pairs:
-        emit("ab_error", {"message": "提示できるペアがありません。"}); return
-    chosen = _balanced_lr_pairs(pairs, AB_PAIRS_PER_USER)
+    chosen = _balanced_lr_pairs(_choose_ab_pairs(room, sid, AB_PAIRS_PER_USER), AB_PAIRS_PER_USER)
     if not chosen:
-        emit("ab_error", {"message": "提示できるペアがありません(2)。"}); return
+        emit("ab_error", {"message": "提示できるペアがありません。"}); return
 
     sess = {
         "room_code": code,
-        "game_id": snapshot.get("game_id") or snapshot.get("segment_id"),
-        "segment_id": snapshot.get("segment_id"),
-        "prompt_or_img_id": snapshot.get("prompt_or_img_id"),
-        "mode": snapshot.get("mode"),
+        "game_id": f"{room.code}-{room.round_no}",  # 区切りの game_id と同じ形
+        "mode": "text",
         "pairs": chosen,
         "idx": 0,
         "voter_hash": _voter_hash(sid),
         "start_ts": time.time(),
-        "prompt": snapshot.get("prompt"),
         "image": None
     }
     ab_sessions[sid] = sess
@@ -1044,7 +1029,7 @@ def on_ab_request(_payload=None):
     emit("ab_session_start", {
         "game_id": sess["game_id"],
         "mode": sess["mode"],
-        "prompt": snapshot.get("prompt"),
+        "prompt": chosen[0]["prompt"],  # 最初のペアのお題（ペアごとのお題は ab_offer で送る）
         "image": None,
         "total": len(chosen)  # 実際に出すペアの数（2人のゲームでは3より少ないことがある）
     })
@@ -1062,9 +1047,11 @@ def _emit_next_pair(sid: str):
         "pair_id": pair["pair_id"],
         "left": pair["left"],
         "right": pair["right"],
+        "prompt": pair["prompt"],  # このペアのお題
         "meta": {
             "game_id": sess["game_id"],
-            "prompt_or_image_id": sess["prompt_or_img_id"],
+            "segment_id": pair["segment_id"],
+            "prompt_or_image_id": pair["prompt"]["id"],
             "step": i+1,
             "total": len(sess["pairs"]),
             "timeout_sec": AB_TIMEOUT_SEC
@@ -1094,7 +1081,8 @@ def on_ab_vote(data):
     row = {
         "pair_id": pair_id,
         "game_id": sess["game_id"],
-        "prompt_or_image_id": sess["prompt_or_img_id"],
+        "segment_id": pair["segment_id"],            # このペアの区切り
+        "prompt_or_image_id": pair["prompt"]["id"],  # このペアのお題
         "mode": sess["mode"],
         "left_id": pair["left"]["id"],
         "right_id": pair["right"]["id"],
@@ -1111,12 +1099,11 @@ def on_ab_vote(data):
         _ensure_logs_dir()
         _log_append(AB_LOG_PATH, row)
 
-    # 強化版ログ（enriched）— ★ segment_id を必ず付与
-    prompt_obj = {"id": (sess.get("prompt") or {}).get("id")}
-    prompt_obj.update({"text": (sess.get("prompt") or {}).get("text","")})
+    # 強化版ログ（enriched）— ★ segment_id を必ず付与（ペアごとの区切り・お題）
+    prompt_obj = {"id": pair["prompt"]["id"], "text": pair["prompt"]["text"]}
 
     enriched = {
-        "segment_id": sess.get("segment_id"),
+        "segment_id": pair["segment_id"],
         "game_id": sess["game_id"],
         "mode": sess.get("mode") or "text",
         "pair_id": pair_id,
