@@ -1,7 +1,7 @@
 # record_store.py
 # -*- coding: utf-8 -*-
 """
-記録（topic_stats / segments / ab_votes / ab_votes_enriched）を Postgres に保存する。
+記録（topic_stats / segments / ab_votes / ab_votes_enriched / match_results）を Postgres に保存する。
 
 - 環境変数 DATABASE_URL があるときだけ使う（ないときは ogiri_duel.py が今までどおり logs/ に保存する）
 - ドライバは pg8000（Python だけで書かれていて、eventlet の monkey_patch 後のソケットでそのまま動く）
@@ -84,6 +84,22 @@ SCHEMA_SQL = [
     # ペアごとの区切りID（AB評価のペアを試合の全お題から作るようになったため）。古い行は NULL のまま
     "ALTER TABLE ab_votes ADD COLUMN IF NOT EXISTS segment_id text",
     "CREATE INDEX IF NOT EXISTS ab_votes_segment_id_idx ON ab_votes (segment_id)",
+    # 試合の勝敗（1試合1行）。参加者ごとの一本の数・点数の合計は players（JSON）に入れる
+    """CREATE TABLE IF NOT EXISTS match_results (
+        match_id    text PRIMARY KEY,
+        room_code   text,
+        result      text NOT NULL,            -- win / draw / abandoned
+        is_draw     boolean NOT NULL,
+        winner_sid  text,
+        winner_name text,
+        overtime    boolean NOT NULL,
+        end_reason  text,                     -- round_end / overtime_ippon / overtime_timeup / all_left
+        players     jsonb NOT NULL,
+        started_at  timestamptz,
+        ended_at    timestamptz,
+        created_at  timestamptz NOT NULL DEFAULT now()
+    )""",
+    "CREATE INDEX IF NOT EXISTS match_results_ended_at_idx ON match_results (ended_at)",
 ]
 
 
@@ -203,6 +219,21 @@ class RecordStore:
                 pid=(row.get("prompt") or {}).get("id"), choice=row.get("choice"), valid=row.get("valid"),
                 same=row.get("same_author"), data=json.dumps(row, ensure_ascii=False))
         self._submit("ab_votes_enriched", op)
+
+    def insert_match_result(self, row: Dict[str, Any]):
+        def op(conn):
+            conn.run(
+                """INSERT INTO match_results (match_id, room_code, result, is_draw, winner_sid, winner_name,
+                                              overtime, end_reason, players, started_at, ended_at)
+                   VALUES (:mid, :code, :result, :draw, :wsid, :wname, :ot, :reason, CAST(:players AS jsonb),
+                           CAST(:started AS timestamptz), CAST(:ended AS timestamptz))
+                   ON CONFLICT (match_id) DO NOTHING""",
+                mid=row.get("match_id"), code=row.get("room_code"), result=row.get("result"),
+                draw=bool(row.get("is_draw")), wsid=row.get("winner_sid"), wname=row.get("winner_name"),
+                ot=bool(row.get("overtime")), reason=row.get("end_reason"),
+                players=json.dumps(row.get("players") or [], ensure_ascii=False),
+                started=row.get("started_at"), ended=row.get("ended_at"))
+        self._submit("match_results", op)
 
     def flush(self, timeout: float = 30.0) -> bool:
         """キューが空になるまで待つ（テスト・終了処理用）。"""

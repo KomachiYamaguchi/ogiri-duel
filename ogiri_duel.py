@@ -14,13 +14,6 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 import difflib
 import mimetypes
 
-# 勝敗ログ（無ければダミーで動作）
-try:
-    from tools.battle_logger import log_battle_result
-except Exception:
-    def log_battle_result(*args, **kwargs):
-        pass
-
 # ========= 環境変数 =========
 OPENAI_MODEL = os.environ.get("OGIRI_MODEL", "gpt-4o-mini")
 
@@ -55,9 +48,10 @@ SKIP_LOG_PATH    = os.path.join(LOG_DIR, "skip_log.jsonl")
 AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
 AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
 TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
+MATCH_LOG_PATH   = os.path.join(LOG_DIR, "match_results.jsonl")
 
 # ========= 記録の保存先（DATABASE_URL があれば Postgres、なければ logs/ のファイル） =========
-# 対象: topic_stats / segments / ab_votes / ab_votes_enriched（skip_log は今までどおりファイル）
+# 対象: topic_stats / segments / ab_votes / ab_votes_enriched / match_results（skip_log は今までどおりファイル）
 RECORD_STORE = None
 if os.environ.get("DATABASE_URL", "").strip():
     try:
@@ -437,6 +431,12 @@ class Room:
         # スコアボード
         self.board={}
 
+        # 試合の記録用（start_battle で設定）
+        self.match_id: Optional[str] = None      # 試合ID（部屋コードは使い回されるので、乱数を付けて一意にする）
+        self.match_started_at: Optional[str] = None
+        self.went_overtime = False
+        self.match_recorded = False              # 勝敗を記録済みか（二重記録の防止）
+
     def to_public(self):
         prompt_text = self.current_prompt.get("text") if isinstance(self.current_prompt, dict) else None
         return {
@@ -537,33 +537,38 @@ def _save_topic_stats(d: dict):
 def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
     seg = {
         "segment_id": f"seg-{uuid.uuid4().hex[:12]}",
-        "game_id": f"{room.code}-{room.round_no}",
+        "game_id": room.match_id or f"{room.code}-{room.round_no}",
         "prompt_id": prompt.get("id"),
         "prompt_text": prompt.get("text"),
         "genre": prompt.get("genre",""),
         "prompt_source": prompt.get("source",""),  # stock / ai / static（統計のキーの決め方に使う）
         "stats_recorded": False,   # topic_stats に記録済みか（二重記録の防止）
-        "answers": [],             # {id,sid,name,text,ts}
+        "answers": [],             # {id,sid,name,text,ts, score(採点が終わると入る)}
         "skip_count": 0,
         "started_at": _utcnow_iso(),
         "ended_at": None
     }
     return seg
 
-def _close_and_log_segment(room: Room):
-    """現在のセグメントを終了し、segments.jsonlに追記（あれば）"""
-    seg = room.current_segment
-    if not seg: return
-    if not seg.get("ended_at"):
-        seg["ended_at"] = _utcnow_iso()
-    # ログ書き出し
+SCORE_WAIT_SEC = 30  # お題を閉じたとき、まだ終わっていない採点を待つ最大の秒数
+
+def _segment_answer_row(a: dict) -> dict:
+    sc = a.get("score") or {}
+    return {"id": a["id"], "sid": a["sid"], "name": a.get("name",""), "text": a["text"],
+            "ts": datetime.utcfromtimestamp(a["ts"]).isoformat()+"Z",
+            # AI採点の結果（採点が終わらなかった回答は scored=false で、点数は null）
+            "scored": bool(sc),
+            "score_raw": sc.get("score_raw"), "penalty": sc.get("penalty"), "score": sc.get("score"),
+            "ippon": sc.get("ippon"), "comment": sc.get("comment")}
+
+def _write_segment(seg: dict):
     row = {
         "segment_id": seg["segment_id"],
         "game_id": seg["game_id"],
         "prompt_id": seg["prompt_id"],
         "prompt_text": seg["prompt_text"],
         "genre": seg.get("genre",""),
-        "answers": [{"id":a["id"],"sid":a["sid"],"name":a.get("name",""),"text":a["text"],"ts":datetime.utcfromtimestamp(a["ts"]).isoformat()+"Z"} for a in seg.get("answers",[])],
+        "answers": [_segment_answer_row(a) for a in seg.get("answers",[])],
         "skip_count": seg.get("skip_count",0),
         "started_at": seg.get("started_at"),
         "ended_at": seg.get("ended_at")
@@ -573,8 +578,26 @@ def _close_and_log_segment(room: Room):
     else:
         _ensure_logs_dir()
         _log_append(SEGMENT_LOG_PATH, row)
+
+def _write_segment_after_scoring(seg: dict):
+    # 採点は回答のあと裏で行うので、全部の採点が終わるまで（最大 SCORE_WAIT_SEC 秒）待ってから保存する
+    deadline = time.time() + SCORE_WAIT_SEC
+    while time.time() < deadline and any("score" not in a for a in seg.get("answers", [])):
+        socketio.sleep(0.5)
+    _write_segment(seg)
+
+def _close_and_log_segment(room: Room):
+    """現在のセグメントを終了して保存する。採点が終わっていない回答があれば、採点を待ってから保存する"""
+    seg = room.current_segment
+    if not seg: return
+    if not seg.get("ended_at"):
+        seg["ended_at"] = _utcnow_iso()
     room.completed_segments.append(seg)
     room.current_segment = None
+    if any("score" not in a for a in seg.get("answers", [])):
+        socketio.start_background_task(_write_segment_after_scoring, seg)
+    else:
+        _write_segment(seg)
 
 def _topic_stats_key(prompt: dict) -> str:
     # ストックのお題は固定IDをキーにする。AI・固定リストのIDは出題のたびに変わるので、今までどおり本文のハッシュ
@@ -637,6 +660,9 @@ def cleanup_sid(sid: str):
         seg = room.current_segment
         if seg and (seg.get("answers") or prev_status == "ended"):
             _close_and_log_segment(room)
+        # 試合の途中で全員が抜けたら、勝敗は「中断」として記録する（その時点の一本の数・点数を残す）
+        if prev_status in ("playing", "overtime"):
+            _record_match_result(room, "abandoned", None, "all_left")
     else:
         if ALLOW_SKIP and room.status == "playing":
             send_skip_progress(room)
@@ -694,77 +720,73 @@ def start_round(room: Room, duration_sec: Optional[int], pick_new_prompt: bool):
 
 def start_battle(room: Room):
     room.status="playing"; room.round_no=1
-    room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
+    room.match_id = f"{room.code}-{uuid.uuid4().hex[:8]}"
+    room.match_started_at = _utcnow_iso()
+    room.went_overtime = False
+    room.match_recorded = False
+    room.board ={m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
     start_round(room, BATTLE_SECONDS, pick_new_prompt=True)
     socketio.start_background_task(_game_loop, room)
 
 def start_overtime(room: Room):
-    room.status="overtime"; now = time.time(); room.round_end_ts = now + OVERTIME_SECONDS
+    room.status="overtime"; room.went_overtime = True; now = time.time(); room.round_end_ts = now + OVERTIME_SECONDS
     socketio.emit("overtime_started", {"note":"サドンデス！次の一本で決着","ends_at": room.round_end_ts,"server_now": now,"mode": room.round_mode}, room=room.code)
 
 def decide_or_overtime(room: Room):
     # AB評価のペアは、ここ（ラウンド終了時）ではなく、試合終了後の ab_request で全お題から作る
     socketio.emit("round_ended", {"answers": sum(len(v) for v in room.answers.values())}, room=room.code)
 
-    # 勝敗
-    leaders = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
-    if not leaders:
-        room.status = "ended"
-        socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code)
-        return
-
-    top = leaders[0][1]["ippon"]
-    tied = [kv for kv in leaders if kv[1]["ippon"] == top]
-    if len(tied) == 1:
-        sid, w = leaders[0]
-        room.status = "ended"
-        socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
-        try:
-            winner_sid = sid
-            # 簡易ロガー互換
-            try:
-                # 代表的ABを一件拾う（既存loggerの互換インターフェース）
-                answers=[]
-                for sid0, arr in room.answers.items():
-                    for a in arr:
-                        answers.append({"sid": sid0, "text": a["text"]})
-                if len(answers) >= 2:
-                    answer_a, answer_b = answers[0]["text"], answers[1]["text"]
-                    log_battle_result(image_src="", answer_a=answer_a, answer_b=answer_b,
-                                      votes_a=1, votes_b=0, winner="A",
-                                      extra={"room": room.code, "mode": room.round_mode, "reason": "match_end"})
-            except Exception as e:
-                print("[WARN] log_battle_result failed:", e)
-        except Exception:
-            pass
+    # 勝敗：一本の数が一番多い人が1人だけなら決着、並んでいれば（全員0本も含む）延長戦
+    if _sole_leader(room) is not None or not room.board:
+        _end_match(room, "round_end")
     else:
         start_overtime(room)
 
 def maybe_finish_overtime(room: Room):
+    # 延長戦で一本が出たとき。単独首位がいればその人の勝ち、まだ並んでいれば引き分けで終了
     if room.status != "overtime": return
-    leaders = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
-    if not leaders:
-        room.status="ended"; socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code); return
-    top_ippon = leaders[0][1]["ippon"]; tied = [kv for kv in leaders if kv[1]["ippon"] == top_ippon]
-    if len(tied) == 1:
-        sid, w = leaders[0]; room.status="ended"
-        socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
-        try:
-            # 互換ロガー
-            answers=[]
-            for sid0, arr in room.answers.items():
-                for a in arr:
-                    answers.append({"sid": sid0, "text": a["text"]})
-            if len(answers) >= 2:
-                answer_a, answer_b = answers[0]["text"], answers[1]["text"]
-                log_battle_result(image_src="", answer_a=answer_a, answer_b=answer_b,
-                                  votes_a=1, votes_b=0, winner="A",
-                                  extra={"room": room.code, "mode": room.round_mode, "reason": "overtime_end"})
-        except Exception as e:
-            print("[WARN] log_battle_result failed (overtime):", e)
+    _end_match(room, "overtime_ippon")
+
+def _sole_leader(room: Room) -> Optional[str]:
+    """一本の数が一番多い人が1人だけなら、その人の sid を返す（点数の合計は勝敗に使わない）。"""
+    if not room.board: return None
+    top = max(v["ippon"] for v in room.board.values())
+    leaders = [sid for sid, v in room.board.items() if v["ippon"] == top]
+    return leaders[0] if len(leaders) == 1 else None
+
+def _end_match(room: Room, reason: str):
+    """試合を終える。勝者を決めて match_over を送り、そのときのスコアボードで勝敗を記録する。"""
+    winner_sid = _sole_leader(room)
+    room.status = "ended"
+    w = room.board.get(winner_sid) if winner_sid else None
+    socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board}, room=room.code)
+    _record_match_result(room, "win" if w else "draw", winner_sid, reason)
+
+def _record_match_result(room: Room, result: str, winner_sid: Optional[str], reason: str):
+    """勝敗の記録（1試合1回）。result: win / draw / abandoned（全員が途中で抜けた）"""
+    if room.match_recorded or not room.match_id: return
+    room.match_recorded = True
+    w = room.board.get(winner_sid) if winner_sid else None
+    row = {
+        "match_id": room.match_id,
+        "room_code": room.code,
+        "result": result,
+        "is_draw": result == "draw",
+        "winner_sid": winner_sid,
+        "winner_name": w["name"] if w else None,
+        "overtime": room.went_overtime,
+        "end_reason": reason,   # round_end / overtime_ippon / overtime_timeup / all_left
+        "players": [{"sid": sid, "name": v["name"], "ippon": v["ippon"], "points": round(float(v["points"]), 2)}
+                    for sid, v in room.board.items()],
+        "started_at": room.match_started_at,
+        "ended_at": _utcnow_iso(),
+    }
+    if RECORD_STORE:
+        RECORD_STORE.insert_match_result(row)
     else:
-        room.status="ended"; socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code)
+        _ensure_logs_dir()
+        _log_append(MATCH_LOG_PATH, row)
 
 def _game_loop(room: "Room"):
     try:
@@ -777,15 +799,8 @@ def _game_loop(room: "Room"):
                 # セグメントはここでは閉じない。延長戦に入ると同じお題で回答が続くので、試合終了時に閉じる（下の finally）
                 decide_or_overtime(room)
             elif room.status=="overtime" and room.round_end_ts and now >= room.round_end_ts:
-                leaders = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
-                if not leaders:
-                    room.status="ended"; socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code); break
-                top_ippon = leaders[0][1]["ippon"]; tied = [kv for kv in leaders if kv[1]["ippon"] == top_ippon]
-                if len(tied) == 1:
-                    sid, w = leaders[0]; room.status="ended"
-                    socketio.emit("match_over", {"winner": {"name": w["name"], **w}, "board": room.board}, room=room.code)
-                else:
-                    room.status="ended"; socketio.emit("match_over", {"winner": None, "board": room.board}, room=room.code)
+                # 延長戦の時間切れ。単独首位がいればその人の勝ち、並んでいれば引き分け
+                _end_match(room, "overtime_timeup")
                 break
             time.sleep(0.5)
     except Exception as e:
@@ -950,7 +965,8 @@ def on_submit_answer(data):
     rec = {"text": text, "ts": now, "seq": len(arr)+1, "id": ans_id, "sid": sid, "name": name}
     arr.append(rec)
 
-    # セグメントにも保存（★）
+    # セグメントにも保存（★）。採点結果は score_task がこの seg_ans に書き込む
+    seg_ans = None
     if room.current_segment is not None:
         seg_ans = dict(rec)  # shallow copy OK
         room.current_segment["answers"].append(seg_ans)
@@ -958,10 +974,15 @@ def on_submit_answer(data):
     emit("answer_accepted", {"text": text, "seq": len(arr)})
     socketio.emit("answer_submitted", {"sid": sid, "name": name, **rec}, room=room.code)
 
-    def score_task(room_obj: Room, rec_obj: dict):
+    def score_task(room_obj: Room, rec_obj: dict, seg_obj: Optional[dict]):
         base = score_one(room_obj, rec_obj)
         dup = dup_penalty_for(room_obj, rec_obj)
         final_score = max(0.0, base["score_raw"] - dup["penalty"])
+        # お題の記録（segments）用に、この回答の採点結果を残す。お題がもう閉じていても、保存前なら反映される
+        if seg_obj is not None:
+            seg_obj["score"] = {"score_raw": round(float(base["score_raw"]), 2), "penalty": dup["penalty"],
+                                "score": round(float(final_score), 2), "ippon": final_score >= SCORE_THRESHOLD,
+                                "comment": base.get("comment","")}
 
         socketio.emit("score_one_ready", {
             "id": rec_obj["id"], "sid": rec_obj["sid"],
@@ -979,7 +1000,7 @@ def on_submit_answer(data):
         if final_score >= SCORE_THRESHOLD and room_obj.status == "overtime":
             maybe_finish_overtime(room_obj)
 
-    socketio.start_background_task(score_task, room, rec)
+    socketio.start_background_task(score_task, room, rec, seg_ans)
 
 # ---- お題変更投票 ----
 @socketio.on("skip_vote")
@@ -1016,7 +1037,7 @@ def on_ab_request(_payload=None):
 
     sess = {
         "room_code": code,
-        "game_id": f"{room.code}-{room.round_no}",  # 区切りの game_id と同じ形
+        "game_id": room.match_id or f"{room.code}-{room.round_no}",  # 区切り・勝敗の記録と同じ試合ID
         "mode": "text",
         "pairs": chosen,
         "idx": 0,
