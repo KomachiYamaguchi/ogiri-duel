@@ -605,7 +605,14 @@ def cleanup_sid(sid: str):
     if not room: return
     room.members = [m for m in room.members if m["sid"] != sid]
     if len(room.members) == 0:
+        prev_status = room.status
         room.status = "closed"; rooms.pop(code, None); socketio.emit("room_closed", {"code": code})
+        # 閉じていないセグメントを保存する。試合の途中なら回答が1件以上あるときだけ
+        # （試合が終わった直後に全員が抜けて、_game_loop より先にここへ来た場合は回答0件でも保存する）。
+        # 「最後まで出題された」とは言えないので topic_stats には記録しない
+        seg = room.current_segment
+        if seg and (seg.get("answers") or prev_status == "ended"):
+            _close_and_log_segment(room)
     else:
         if ALLOW_SKIP and room.status == "playing":
             send_skip_progress(room)
@@ -770,12 +777,9 @@ def _game_loop(room: "Room"):
             if room.status in ("ended","closed"): break
             now = time.time()
             if room.status=="playing" and room.round_end_ts and now >= room.round_end_ts:
-                # ラウンド終了時点のセグメントをクローズ＆ログ（★）
-                if room.current_segment and not room.current_segment.get("ended_at"):
-                    room.current_segment["ended_at"] = _utcnow_iso()
-                    # お題が最後まで出題された（スキップされなかった）ことを記録
-                    _record_segment_topic_stats(room.current_segment, skipped=False)
-                    _close_and_log_segment(room)
+                # お題が最後まで出題された（スキップされなかった）ことを記録（記録済みなら何もしない）
+                _record_segment_topic_stats(room.current_segment, skipped=False)
+                # セグメントはここでは閉じない。延長戦に入ると同じお題で回答が続くので、試合終了時に閉じる（下の finally）
                 decide_or_overtime(room)
             elif room.status=="overtime" and room.round_end_ts and now >= room.round_end_ts:
                 leaders = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
@@ -791,6 +795,11 @@ def _game_loop(room: "Room"):
             time.sleep(0.5)
     except Exception as e:
         print("[WARN] game_loop error:", e)
+    finally:
+        # 試合が終わった（決着・延長の時間切れ・引き分け）ら、延長戦の回答も含めてセグメントを閉じて保存。
+        # 全員退出（closed）のときは cleanup_sid 側で保存する
+        if room.status == "ended" and room.current_segment:
+            _close_and_log_segment(room)
 
 # ---- お題変更（セグメント切替を含む） ----
 def change_prompt_same_mode(room: Room):
