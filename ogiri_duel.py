@@ -56,6 +56,17 @@ AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
 AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
 TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
 
+# ========= 記録の保存先（DATABASE_URL があれば Postgres、なければ logs/ のファイル） =========
+# 対象: topic_stats / segments / ab_votes / ab_votes_enriched（skip_log は今までどおりファイル）
+RECORD_STORE = None
+if os.environ.get("DATABASE_URL", "").strip():
+    try:
+        from record_store import RecordStore
+        RECORD_STORE = RecordStore(os.environ["DATABASE_URL"].strip())
+    except Exception as e:
+        print(f"[ERROR] record store could not start; falling back to files in {LOG_DIR}: {type(e).__name__}: {e}")
+        RECORD_STORE = None
+
 # ========= OpenAI =========
 def _make_openai_client():
     try:
@@ -522,8 +533,7 @@ def _close_and_log_segment(room: Room):
     if not seg.get("ended_at"):
         seg["ended_at"] = _utcnow_iso()
     # ログ書き出し
-    _ensure_logs_dir()
-    _log_append(SEGMENT_LOG_PATH, {
+    row = {
         "segment_id": seg["segment_id"],
         "game_id": seg["game_id"],
         "prompt_id": seg["prompt_id"],
@@ -533,7 +543,12 @@ def _close_and_log_segment(room: Room):
         "skip_count": seg.get("skip_count",0),
         "started_at": seg.get("started_at"),
         "ended_at": seg.get("ended_at")
-    })
+    }
+    if RECORD_STORE:
+        RECORD_STORE.insert_segment(row)
+    else:
+        _ensure_logs_dir()
+        _log_append(SEGMENT_LOG_PATH, row)
     room.completed_segments.append(seg)
     room.current_segment = None
 
@@ -551,9 +566,12 @@ def _record_segment_topic_stats(seg: Optional[dict], skipped: bool):
                             "genre": seg.get("genre",""), "source": seg.get("prompt_source","")}, skipped=skipped)
 
 def _increment_topic_stats(prompt: dict, skipped: bool):
+    key = _topic_stats_key(prompt)
+    if RECORD_STORE:
+        RECORD_STORE.increment_topic_stat(key, prompt.get("id"), prompt.get("text",""), prompt.get("genre",""), skipped)
+        return
     stats = _load_topic_stats()
     items = stats["items"]
-    key = _topic_stats_key(prompt)
     row = items.get(key, {"imp":0,"ewma_skip":0.3,"last":None,"text":prompt.get("text"),"genre":prompt.get("genre","")})
     # EWMA（α=0.3）
     alpha=0.3
@@ -1073,8 +1091,11 @@ def on_ab_vote(data):
         "valid": bool(rt_ms >= AB_MIN_RT_MS),
         "voter_hash": sess["voter_hash"]
     }
-    _ensure_logs_dir()
-    _log_append(AB_LOG_PATH, row)
+    if RECORD_STORE:
+        RECORD_STORE.insert_ab_vote(row)
+    else:
+        _ensure_logs_dir()
+        _log_append(AB_LOG_PATH, row)
 
     # 強化版ログ（enriched）— ★ segment_id を必ず付与
     prompt_obj = {"id": (sess.get("prompt") or {}).get("id")}
@@ -1094,7 +1115,10 @@ def on_ab_vote(data):
         "right": {"id": pair["right"]["id"],"author": pair["right"].get("author",""),"text": pair["right"].get("text","")},
         "ts": _utcnow_iso()
     }
-    _log_append(AB_ENRICHED_PATH, enriched)
+    if RECORD_STORE:
+        RECORD_STORE.insert_ab_vote_enriched(enriched)
+    else:
+        _log_append(AB_ENRICHED_PATH, enriched)
 
     # 次ペアへ
     sess["idx"] += 1
