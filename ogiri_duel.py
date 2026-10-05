@@ -506,6 +506,8 @@ def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
         "prompt_id": prompt.get("id"),
         "prompt_text": prompt.get("text"),
         "genre": prompt.get("genre",""),
+        "prompt_source": prompt.get("source",""),  # stock / ai / static（統計のキーの決め方に使う）
+        "stats_recorded": False,   # topic_stats に記録済みか（二重記録の防止）
         "answers": [],             # {id,sid,name,text,ts}
         "skip_count": 0,
         "started_at": _utcnow_iso(),
@@ -535,10 +537,23 @@ def _close_and_log_segment(room: Room):
     room.completed_segments.append(seg)
     room.current_segment = None
 
+def _topic_stats_key(prompt: dict) -> str:
+    # ストックのお題は固定IDをキーにする。AI・固定リストのIDは出題のたびに変わるので、今までどおり本文のハッシュ
+    if prompt.get("source") == "stock" and prompt.get("id"):
+        return str(prompt["id"])
+    return _hash_norm(prompt.get("text",""))
+
+def _record_segment_topic_stats(seg: Optional[dict], skipped: bool):
+    """セグメントのお題を topic_stats に1回だけ記録する（スキップ成立時と、ラウンド終了時の両方から呼ぶ）。"""
+    if not seg or seg.get("stats_recorded"): return
+    seg["stats_recorded"] = True
+    _increment_topic_stats({"id": seg.get("prompt_id"), "text": seg.get("prompt_text",""),
+                            "genre": seg.get("genre",""), "source": seg.get("prompt_source","")}, skipped=skipped)
+
 def _increment_topic_stats(prompt: dict, skipped: bool):
     stats = _load_topic_stats()
     items = stats["items"]
-    key = _hash_norm(prompt.get("text",""))
+    key = _topic_stats_key(prompt)
     row = items.get(key, {"imp":0,"ewma_skip":0.3,"last":None,"text":prompt.get("text"),"genre":prompt.get("genre","")})
     # EWMA（α=0.3）
     alpha=0.3
@@ -740,6 +755,8 @@ def _game_loop(room: "Room"):
                 # ラウンド終了時点のセグメントをクローズ＆ログ（★）
                 if room.current_segment and not room.current_segment.get("ended_at"):
                     room.current_segment["ended_at"] = _utcnow_iso()
+                    # お題が最後まで出題された（スキップされなかった）ことを記録
+                    _record_segment_topic_stats(room.current_segment, skipped=False)
                     _close_and_log_segment(room)
                 decide_or_overtime(room)
             elif room.status=="overtime" and room.round_end_ts and now >= room.round_end_ts:
@@ -767,7 +784,7 @@ def change_prompt_same_mode(room: Room):
             room.current_segment["skip_count"] = room.current_segment.get("skip_count", 0) + 1
             room.current_segment["ended_at"] = _utcnow_iso()
             # 統計（EWMA）更新：skip=true で1インクリメント
-            _increment_topic_stats({"id": room.current_segment.get("prompt_id"), "text": room.current_segment.get("prompt_text",""), "genre": room.current_segment.get("genre","")}, skipped=True)
+            _record_segment_topic_stats(room.current_segment, skipped=True)
             # 旧互換ログ（skip）にも追記
             _log_append(SKIP_LOG_PATH, {
                 "ts": _utcnow_iso(),
