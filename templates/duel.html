@@ -141,7 +141,7 @@
       .hdr-right{ gap:8px; }
       .container{ padding: 0 12px; }
       .primary, .ghost, button{ width: 100%; }
-      #roomCodeInput, #nameInput, #capacitySelect{ flex:1; }
+      #roomCodeInput, #capacitySelect{ flex:1; }
     }
 
     /* ====== Lobby Tabs ====== */
@@ -159,6 +159,8 @@
     .lobby-line > input, .lobby-line > select{ flex:1; min-width:0; }
     .lobby-line > button{ width:auto; flex-shrink:0; }
     .lobby-line > .grow{ flex:1; }
+    /* 名前の欄は控えめに（低く）。文字は 16px のまま（16px 未満だと iPhone で押したときに画面が拡大される） */
+    .name-input{ display:block; width:100%; padding:5px 10px; font-size:16px; border-radius:10px; }
 
     /* ====== Room / Members ====== */
     .member{
@@ -302,10 +304,8 @@
         </ol>
       </div>
 
-      <div class="lobby-line" style="margin-top:10px;">
-        <input id="nameInput" type="text" placeholder="名前（例：けんじ）" />
-        <button id="saveNameBtn" class="ghost">名前をセット</button>
-      </div>
+      <!-- 名前は入力欄だけ。マッチ開始・ルーム作成・参加のときに自動で送る -->
+      <input id="nameInput" class="name-input" type="text" placeholder="名前（なしでもOK）" aria-label="名前（なしでもOK）" autocomplete="nickname" style="margin-top:10px;" />
 
       <div class="lobby-tabs" role="tablist" style="margin-top:14px;">
         <button type="button" class="lobby-tab active" role="tab" aria-selected="true" data-tab-target="quickPanel">クイックマッチ<span class="tab-sub">知らない人と2人で</span></button>

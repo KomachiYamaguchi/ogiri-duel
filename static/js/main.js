@@ -48,7 +48,6 @@ const gameCard = $("gameCard");
 
 const nameInput = $("nameInput");
 const capacitySelect = $("capacitySelect");
-const saveNameBtn = $("saveNameBtn");
 
 const joinQueueBtn = $("joinQueueBtn");
 const cancelQueueBtn = $("cancelQueueBtn");
@@ -140,13 +139,14 @@ function setMatchState(status) {
 const NAME_KEY = "ogiri_duel_name";
 try { myName = localStorage.getItem(NAME_KEY) || ""; } catch (_e) { myName = ""; }
 if (nameInput && myName) nameInput.value = myName;
-/* 入力中の名前を送る（マッチ開始・ルーム作成・参加の前に呼ぶ）。変わっていなければ送らない */
+/* 入力中の名前を送る（マッチ開始・ルーム作成・参加の前に呼ぶ）。変わっていなければ送らない。
+   空にしたときも送る（サーバー側で「匿名」に戻り、部屋の中で「匿名1」などになる） */
 function syncName() {
   const name = (nameInput?.value || "").trim();
-  if (!name || name === myName) return true;
+  if (name === myName) return true;
   if (!send("set_name", { name })) return false;
   myName = name;
-  try { localStorage.setItem(NAME_KEY, name); } catch (_e) {}
+  try { if (name) localStorage.setItem(NAME_KEY, name); else localStorage.removeItem(NAME_KEY); } catch (_e) {}
   return true;
 }
 
@@ -256,9 +256,6 @@ socket.on("config", (cfg) => {
   show(imgCredit, false);
   setThreshold(cfg?.threshold);
 });
-
-/* ---------- 名前 ---------- */
-saveNameBtn?.addEventListener("click", () => syncName(), { passive: true });
 
 /* ---------- お題箱（ロビーでお題を投稿。保存するだけで、自動では出題しない） ---------- */
 const topicBoxToggle = $("topicBoxToggle");

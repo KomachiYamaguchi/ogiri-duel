@@ -765,6 +765,12 @@ def _start_after_countdown(room: Room):
     _begin_battle(room)
 
 def _begin_battle(room: Room):
+    # 先にお題を選ぶ（AI に作らせると数秒かかる）。その間は status="starting" のままにして、回答を受け付けない。
+    # 以前は先に "playing" にしていたため、お題が出る前の回答が受け付けられ、お題が出ると一覧から消えるのに一本だけ残った
+    choose_prompt_for(room)
+    # お題を選んでいる間に全員が抜けた・部屋が閉じたときは始めない
+    if room.status != "starting" or not room.members or rooms.get(room.code) is not room:
+        return
     room.status="playing"; room.round_no=1
     room.match_id = f"{room.code}-{uuid.uuid4().hex[:8]}"
     room.match_started_at = _utcnow_iso()
@@ -774,7 +780,7 @@ def _begin_battle(room: Room):
     room.devices = {m["sid"]: sid_to_device.get(m["sid"], "unknown") for m in room.members}  # 試合開始時の端末の種類
     room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
-    start_round(room, BATTLE_SECONDS, pick_new_prompt=True)
+    start_round(room, BATTLE_SECONDS, pick_new_prompt=False)  # お題は上で選んだもの
     send_skip_progress(room)  # お題変更に必要な人数を最初から表示するため
     socketio.start_background_task(_game_loop, room)
 
