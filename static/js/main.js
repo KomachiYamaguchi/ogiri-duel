@@ -70,7 +70,6 @@ const imgCredit = $("imgCredit");
 const promptText = $("promptText");
 const answerInput = $("answerInput");
 const submitAnswerBtn = $("submitAnswerBtn");
-const myAnswers = $("myAnswers");
 const roundPanel = $("roundPanel");
 const scoreBoard = $("scoreBoard");
 const targetIpponSpan = $("targetIppon");
@@ -205,7 +204,10 @@ function renderScoreEvent({ id, score_raw, penalty, score, similar_to, comment, 
   const pen = Number(penalty || 0);
   const fin = Number(score || 0);
   const th = Number(threshold || 7);
-  const simTxt = similar_to ? `（類似${similar_to.name ?? ""} -${pen.toFixed(1)}）` : "";
+  // 自分の回答が自分の前の回答と似ていたときは、名前ではなく「自分の回答と類似」と出す
+  const selfDup = similar_to?.self_dup && el.classList.contains("mine");
+  const simWho = selfDup ? "自分の回答と類似" : `類似${similar_to?.name ?? ""}`;
+  const simTxt = similar_to ? `（${simWho} -${pen.toFixed(1)}）` : "";
   if (meta) {
     // 減点がないときは最終の点数だけ（「9.0点 ⇒ 9.0点」と重ねない）
     meta.textContent = (pen > 0 ? `${base.toFixed(1)}点 - ${pen.toFixed(1)} ${simTxt} ⇒ ${fin.toFixed(1)}点` : `${fin.toFixed(1)}点`)
@@ -445,7 +447,9 @@ function showResult(winner, board, summary) {
   const ranking = summary?.ranking || Object.entries(board || {})
     .sort((a, b) => winner ? (b[1].ippon - a[1].ippon || b[1].points - a[1].points) : 0)
     .map(([sid, v], i) => ({ rank: winner ? i + 1 : null, sid, name: v.name, ippon: v.ippon, points: v.points, best: null }));
-  resultTitle.textContent = winner ? `勝者：${winner.name}` : "引き分け";
+  // 自分が勝ったら「あなたの勝ち！」、負けたら「勝者：○○」、引き分けは「引き分け」
+  const iWon = ranking.some((r) => r.winner && r.sid === mySid);
+  resultTitle.textContent = !winner ? "引き分け" : (iWon ? "あなたの勝ち！" : `勝者：${winner.name}`);
   resultReason.textContent = summary?.reason || "";
   resultRanking.innerHTML = "";
   for (const r of ranking) {
@@ -472,7 +476,6 @@ function showResult(winner, board, summary) {
 socket.on("round_started", (payload) => {
   currentRoundMode = "text";
   setThreshold(payload.threshold);
-  myAnswers && (myAnswers.innerHTML = "");
   roundPanel && (roundPanel.innerHTML = "");
   show(suddenBanner, false);
 
@@ -571,17 +574,15 @@ socket.on("answer_accepted", ({ text, seq }) => {
   if (answerInput && pendingAnswer !== null && answerInput.value.trim() === pendingAnswer) answerInput.value = "";
   pendingAnswer = null;
   show(answerError, false);
-  const div = document.createElement("div");
-  div.className = "answer";
-  div.textContent = `#${seq} 自分: ${text}`;
-  myAnswers?.prepend(div);
+  // 自分の回答は、提出一覧に「あなた」として出る（answer_submitted）。入力欄の下には別の一覧を出さない
 });
 
-socket.on("answer_submitted", ({ name, text, id }) => {
+socket.on("answer_submitted", ({ name, text, id, sid }) => {
   const box = document.createElement("div");
-  box.className = "answer-item answer";
+  const mine = sid === mySid;
+  box.className = "answer-item answer" + (mine ? " mine" : "");   // 自分の回答は枠の色でもわかるように
   box.dataset.answerId = id;
-  box.innerHTML = `<div><b>${escapeHtml(name)}</b>：${escapeHtml(text)}</div><div class="muted" style="font-size:12px;">採点中...</div>`;
+  box.innerHTML = `<div><b>${mine ? "あなた" : escapeHtml(name)}</b>：${escapeHtml(text)}</div><div class="muted" style="font-size:12px;">採点中...</div>`;
   roundPanel?.prepend(box);
 });
 
@@ -611,10 +612,10 @@ function _renderBoard(board, target) {
   // innerHTML置き換え（1回だけ）
   const items = Object.entries(board || {}).sort((a, b) => b[1].ippon - a[1].ippon || b[1].points - a[1].points);
   const frag = document.createDocumentFragment();
-  for (const [, v] of items) {
+  for (const [sid, v] of items) {
     const row = document.createElement("div");
     row.className = "member";
-    row.innerHTML = `<div>${escapeHtml(v.name)}</div><div>${v.ippon} 本 / ${v.points.toFixed(1)} 点</div>`;
+    row.innerHTML = `<div>${escapeHtml(v.name)}${sid === mySid ? "（あなた）" : ""}</div><div>${v.ippon} 本 / ${v.points.toFixed(1)} 点</div>`;
     frag.appendChild(row);
   }
   scoreBoard.innerHTML = "";

@@ -162,6 +162,7 @@
     }
     .credit{ margin-top:6px; font-size:12px; color:#9aa2b6; }
     .answer{ background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px; }
+    .answer.mine{ border-color: var(--accent); }  /* 自分の回答（今ある色を使う） */
 
     /* ====== Badges ====== */
     .status-wait{ background:#16202f; border-color:#22324a; color:#b9c6e7; }
@@ -382,6 +383,11 @@
         <!-- テキストお題 -->
         <div id="promptText" style="font-size:20px;" class="hidden">—</div>
         <div class="muted" style="margin-top:4px;"><span class="js-threshold">7</span>点以上で「一本」。一本の数がいちばん多い人の勝ち</div>
+        <!-- お題変更：お題のすぐ下に小さく。投票の状況はボタンの横 -->
+        <div id="skipBox" class="row" style="margin-top:6px; gap:8px; flex-wrap:nowrap;">
+          <button id="skipBtn" class="ghost btn-sm">お題変更</button>
+          <span id="skipStatus" class="muted"></span>
+        </div>
       </div>
 
       <div class="row" style="margin-top:12px; align-items:flex-start;">
@@ -392,18 +398,11 @@
           <div class="row" style="margin-top:8px;">
             <button id="submitAnswerBtn" class="primary">回答を送信</button>
           </div>
-          <div id="myAnswers" class="list" style="margin-top:12px;"></div>
         </div>
 
-        <!-- 右：提出一覧＋スコア -->
+        <!-- 右：提出一覧＋スコア（自分の回答も、この一覧に「あなた」として出る） -->
         <div style="flex:1; min-width:260px;">
-          <div class="row" style="justify-content:space-between; align-items:center;">
-            <div class="muted">提出一覧（採点は即時表示）</div>
-            <div id="skipBox" class="row">
-              <button id="skipBtn" class="ghost">お題変更</button>
-              <span id="skipStatus" class="muted">投票 0 / 0</span>
-            </div>
-          </div>
+          <div class="muted">提出一覧（採点は即時表示）</div>
           <div id="roundPanel" class="list" style="margin-top:8px;"></div>
 
           <div class="subcard" style="margin-top:12px;">

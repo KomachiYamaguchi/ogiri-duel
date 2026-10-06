@@ -1004,6 +1004,20 @@ def on_client_info(data):
     device = (data or {}).get("device")
     sid_to_device[request.sid] = device if device in ("mobile", "desktop") else "unknown"
 
+def _room_display_name(room: Room, raw: Optional[str]) -> str:
+    """部屋の中での表示名。名前を入れていない人は「匿名1」「匿名2」…と、部屋の中で重ならない番号を付ける。"""
+    name = (raw or "").strip()
+    if name and name != "匿名":
+        return name
+    used = {m["name"] for m in room.members}
+    n = 1
+    while f"匿名{n}" in used:
+        n += 1
+    return f"匿名{n}"
+
+def _member_name(room: Room, sid: str) -> str:
+    return next((m["name"] for m in room.members if m["sid"] == sid), sid_to_name.get(sid, "匿名"))
+
 @socketio.on("set_name")
 def on_set_name(data):
     name = (data or {}).get("name") or "匿名"
@@ -1024,7 +1038,7 @@ def on_join_queue(_):
         room = Room(code, capacity=QUICK_CAPACITY); room.is_quick = True; rooms[code] = room
         for m in group:
             join_room(code, sid=m["sid"])
-            room.members.append({"sid": m["sid"], "name": m["name"], "joined_at": datetime.utcnow().isoformat()})
+            room.members.append({"sid": m["sid"], "name": _room_display_name(room, m["name"]), "joined_at": datetime.utcnow().isoformat()})
             sid_to_room[m["sid"]] = code
         socketio.emit("matched", room.to_public(), room=code)
         broadcast_room_update(room)
@@ -1044,7 +1058,7 @@ def on_create_room(data):
     code = generate_room_code()
     room = Room(code, capacity=cap); rooms[code] = room
     join_room(code, sid=request.sid)
-    room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
+    room.members.append({"sid": request.sid, "name": _room_display_name(room, name), "joined_at": datetime.utcnow().isoformat()})
     sid_to_room[request.sid] = code
     emit("room_created", room.to_public(), to=request.sid)
     broadcast_room_update(room)
@@ -1058,7 +1072,7 @@ def on_join_room_code(data):
         emit("join_error", {"message": "満員 or 開始済みです。"}); return
     name = sid_to_name.get(request.sid) or "匿名"; cleanup_sid(request.sid)
     join_room(code, sid=request.sid)
-    room.members.append({"sid": request.sid, "name": name, "joined_at": datetime.utcnow().isoformat()})
+    room.members.append({"sid": request.sid, "name": _room_display_name(room, name), "joined_at": datetime.utcnow().isoformat()})
     sid_to_room[request.sid] = code
     emit("room_joined", room.to_public(), to=request.sid)
     broadcast_room_update(room)
@@ -1094,7 +1108,7 @@ def on_submit_answer(data):
         emit("answer_error", {"message": "締切後です。"}); return
 
     # ラウンド全体の回答（重複ペナルティ／ボード用）
-    sid, name = request.sid, sid_to_name.get(request.sid, "匿名")
+    sid, name = request.sid, _member_name(room, request.sid)  # 部屋の中での表示名（匿名1 など）
     arr = room.answers.setdefault(sid, [])
     ans_id = f"{sid}:{len(arr)+1}"
     rec = {"text": text, "ts": now, "seq": len(arr)+1, "id": ans_id, "sid": sid, "name": name}
