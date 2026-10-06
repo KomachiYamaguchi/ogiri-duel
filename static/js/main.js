@@ -37,8 +37,12 @@ const escapeHtml = (s) =>
   (s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
 /* ---------- elements ---------- */
-const mySidSpan = $("mySid");
 const lobbySec = $("lobby");
+const matchBar = $("matchBar");
+const matchState = $("matchState");
+const matchScore = $("matchScore");
+const countdownPill = $("countdownPill");
+const matchLeaveBtn = $("matchLeaveBtn");
 const roomCard = $("roomCard");
 const gameCard = $("gameCard");
 
@@ -71,7 +75,6 @@ const roundPanel = $("roundPanel");
 const scoreBoard = $("scoreBoard");
 const targetIpponSpan = $("targetIppon");
 const countdownSpan = $("countdown");
-const roundNoSpan = $("roundNo");
 const suddenBanner = $("suddenBanner");
 
 const skipBox = $("skipBox");
@@ -114,6 +117,39 @@ let matchActive = false;         // 試合中（開始〜終了）か。切断�
 let myName = "";                 // 再接続したときに名前を送り直すため
 let pendingAnswer = null;        // 送信して、まだ「受け付けた」が返ってきていない回答
 let abStartTimer = null;         // 結果画面のあと AB 評価を始めるタイマー
+let mySid = "";                  // 自分の接続ID（画面には出さない。結果画面の「あなた」表示に使う）
+let threshold = 7;               // 一本の点数（サーバーの設定に合わせる）
+
+/* 点数の表示：整数なら「7」、そうでなければ「7.5」 */
+const fmtPt = (n) => { const v = Number(n); return Number.isInteger(v) ? String(v) : v.toFixed(1); };
+function setThreshold(t) {
+  if (t == null || isNaN(Number(t))) return;
+  threshold = Number(t);
+  document.querySelectorAll(".js-threshold").forEach((el) => { el.textContent = fmtPt(threshold); });
+  targetIpponSpan && (targetIpponSpan.textContent = fmtPt(threshold));
+}
+
+/* 部屋・試合の状態を日本語で出す */
+const STATE_LABEL = { waiting: "待機中", playing: "対戦中", overtime: "延長戦", judging: "採点中", ended: "終了", closed: "終了" };
+function setMatchState(status) {
+  const label = STATE_LABEL[status] || status;
+  matchState && (matchState.textContent = label);
+  roomStatusPill && (roomStatusPill.textContent = label);
+}
+
+/* 名前：ブラウザに保存し、次に開いたときに入れておく（保存できない環境でも動くように try で囲む） */
+const NAME_KEY = "ogiri_duel_name";
+try { myName = localStorage.getItem(NAME_KEY) || ""; } catch (_e) { myName = ""; }
+if (nameInput && myName) nameInput.value = myName;
+/* 入力中の名前を送る（マッチ開始・ルーム作成・参加の前に呼ぶ）。変わっていなければ送らない */
+function syncName() {
+  const name = (nameInput?.value || "").trim();
+  if (!name || name === myName) return true;
+  if (!send("set_name", { name })) return false;
+  myName = name;
+  try { localStorage.setItem(NAME_KEY, name); } catch (_e) {}
+  return true;
+}
 
 /* 端末の種類（ブラウザの情報で大まかに判定。勝敗の記録に残すだけ） */
 const DEVICE = (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean")
@@ -171,7 +207,9 @@ function renderScoreEvent({ id, score_raw, penalty, score, similar_to, comment, 
   const th = Number(threshold || 7);
   const simTxt = similar_to ? `（類似${similar_to.name ?? ""} -${pen.toFixed(1)}）` : "";
   if (meta) {
-    meta.textContent = `${base.toFixed(1)}点 ${pen > 0 ? `- ${pen.toFixed(1)} ${simTxt} ⇒ ${fin.toFixed(1)}点` : `⇒ ${fin.toFixed(1)}点`}${fin >= th ? " ★IPPON!" : ""}`;
+    // 減点がないときは最終の点数だけ（「9.0点 ⇒ 9.0点」と重ねない）
+    meta.textContent = (pen > 0 ? `${base.toFixed(1)}点 - ${pen.toFixed(1)} ${simTxt} ⇒ ${fin.toFixed(1)}点` : `${fin.toFixed(1)}点`)
+      + (fin >= th ? " ★IPPON!" : "");
   }
   // アニメ（内部でtransform/opacityのみ使う）＋短命DOM
   showScorePop(el, fin, th);
@@ -193,7 +231,7 @@ socket = io({
   reconnectionDelayMax: 4000,
 });
 
-socket.on("connected", (data) => { mySidSpan && (mySidSpan.textContent = data.sid); });
+socket.on("connected", (data) => { mySid = data.sid || ""; });
 
 /* 接続している間だけ送る（切れている間に押した操作が、つながったあとで急に届かないように） */
 function send(event, data) {
@@ -214,16 +252,14 @@ socket.on("connect", () => {
 socket.on("config", (cfg) => {
   show(promptImage, false);
   show(imgCredit, false);
+  setThreshold(cfg?.threshold);
 });
 
 /* ---------- 名前 ---------- */
-saveNameBtn?.addEventListener("click", () => {
-  const name = (nameInput?.value || "").trim() || "匿名";
-  if (send("set_name", { name })) myName = name;
-}, { passive: true });
+saveNameBtn?.addEventListener("click", () => syncName(), { passive: true });
 
 /* ---------- クイック ---------- */
-joinQueueBtn?.addEventListener("click", () => send("join_queue", {}), { passive: true });
+joinQueueBtn?.addEventListener("click", () => { if (syncName()) send("join_queue", {}); }, { passive: true });
 cancelQueueBtn?.addEventListener("click", () => send("cancel_queue"), { passive: true });
 socket.on("queue_joined", () => { queueStatus && (queueStatus.textContent = "待機中：2人マッチ"); show(lobbyNotice, false); });
 socket.on("queue_canceled", () => { queueStatus && (queueStatus.textContent = "待機していません"); });
@@ -231,20 +267,22 @@ socket.on("queue_canceled", () => { queueStatus && (queueStatus.textContent = "�
 /* ---------- ルーム ---------- */
 createRoomBtn?.addEventListener("click", () => {
   const cap = parseInt(capacitySelect?.value || "2", 10);
-  send("create_room", { capacity: cap });
+  if (syncName()) send("create_room", { capacity: cap });
 }, { passive: true });
 joinRoomBtn?.addEventListener("click", () => {
   const code = (roomCodeInput?.value || "").toUpperCase();
-  if (code) send("join_room_code", { code });
+  if (code && syncName()) send("join_room_code", { code });
 }, { passive: true });
 /* 退室：サーバーに知らせて、返事を待たずにロビーへ戻る（サーバーからも left_room が届く） */
-leaveRoomBtn?.addEventListener("click", () => { if (send("leave_room")) leaveToLobby(); }, { passive: true });
+const leaveRoom = () => { if (send("leave_room")) leaveToLobby(); };
+leaveRoomBtn?.addEventListener("click", leaveRoom, { passive: true });
+matchLeaveBtn?.addEventListener("click", leaveRoom, { passive: true });  // 試合中は上部バーの「退室」
 socket.on("left_room", () => leaveToLobby());
 
 /* 結果画面のボタン */
 againBtn?.addEventListener("click", () => {
   // join_queue はサーバー側で今の部屋から抜けてから待ち行列に入る
-  if (!send("join_queue", {})) return;
+  if (!syncName() || !send("join_queue", {})) return;
   leaveToLobby();
   queueStatus && (queueStatus.textContent = "待機中：2人マッチ");
 }, { passive: true });
@@ -273,9 +311,25 @@ socket.on("game_started", (room) => {
   enterRoom(room);
   show(gameCard, true);
   show(gameNotice, false);
+  // 試合中はルーム欄をたたみ、状態・残り時間・一本の数を上部の固定バーに出す
+  show(roomCard, false);
+  setMatchState("playing");
+  show(countdownPill, true);
+  show(matchLeaveBtn, true);
+  renderMatchScore(Object.fromEntries((room.members || []).map((m) => [m.sid, { name: m.name, ippon: 0, points: 0 }])));
+  show(matchBar, true);
+  window.scrollTo(0, 0);
 });
 
+/* 上部バーの一本の数（自分を先頭に） */
+function renderMatchScore(board) {
+  if (!matchScore) return;
+  const items = Object.entries(board || {}).sort((a, b) => (b[0] === mySid) - (a[0] === mySid));
+  matchScore.textContent = items.map(([sid, v]) => `${sid === mySid ? "あなた" : v.name} ${v.ippon}本`).join(" ・ ");
+}
+
 socket.on("overtime_started", (p) => {
+  setMatchState("overtime");
   show(suddenBanner, true);
   startCountdown(p.ends_at, p.server_now);
   if (skipBox) skipBox.style.display = "none"; // サドンデスはお題変更不可
@@ -284,6 +338,7 @@ socket.on("overtime_started", (p) => {
 
 /* 時間切れのあと、締め切りまでの回答の採点を待っている間（回答・お題変更はできない） */
 socket.on("judging_started", () => {
+  setMatchState("judging");
   stopCountdown();
   show($("countdownLabel"), false); // 「残り」を消して「採点中…」だけにする
   if (countdownSpan) countdownSpan.textContent = "採点中…";
@@ -294,8 +349,10 @@ socket.on("judging_started", () => {
 socket.on("match_over", ({ winner, board, summary }) => {
   matchActive = false;
   stopCountdown();
-  show($("countdownLabel"), false);
-  if (countdownSpan) countdownSpan.textContent = "試合終了";
+  setMatchState("ended");
+  show(countdownPill, false);   // 上部バーは「終了」と一本の数だけ残す（退室は結果画面の「ロビーへ」で）
+  show(matchLeaveBtn, false);
+  renderMatchScore(board);
   if (submitAnswerBtn) submitAnswerBtn.disabled = true;  // 試合が終わったら送れない
   if (skipBtn) skipBtn.disabled = true;
   renderBoard(board, null);
@@ -312,7 +369,6 @@ function showResult(winner, board, summary) {
     .map(([sid, v], i) => ({ rank: i + 1, sid, name: v.name, ippon: v.ippon, points: v.points, best: null }));
   resultTitle.textContent = winner ? `勝者：${winner.name}` : "引き分け";
   resultReason.textContent = summary?.reason || "";
-  const mySid = mySidSpan?.textContent || "";
   resultRanking.innerHTML = "";
   for (const r of ranking) {
     const row = document.createElement("div");
@@ -337,8 +393,7 @@ function showResult(winner, board, summary) {
 /* ---------- ラウンド開始 ---------- */
 socket.on("round_started", (payload) => {
   currentRoundMode = "text";
-  roundNoSpan && (roundNoSpan.textContent = payload.round_no);
-  targetIpponSpan && (targetIpponSpan.textContent = payload.threshold?.toFixed(1) ?? "7.0");
+  setThreshold(payload.threshold);
   myAnswers && (myAnswers.innerHTML = "");
   roundPanel && (roundPanel.innerHTML = "");
   show(suddenBanner, false);
@@ -462,7 +517,8 @@ function renderBoard(board, target) {
   scheduleRender();
 }
 function _renderBoard(board, target) {
-  if (targetIpponSpan && target != null) targetIpponSpan.textContent = String(target);
+  if (target != null) setThreshold(target);
+  renderMatchScore(board);
   if (!scoreBoard) return;
   // innerHTML置き換え（1回だけ）
   const items = Object.entries(board || {}).sort((a, b) => b[1].ippon - a[1].ippon || b[1].points - a[1].points);
@@ -484,20 +540,21 @@ function enterRoom(room) {
   show(lobbySec, false);
   show(lobbyNotice, false);
   show(resultCard, false);
-  show(roomCard, true);
-  show(gameCard, ["playing", "overtime", "judging"].includes(room.status));
+  const inMatch = ["playing", "overtime", "judging"].includes(room.status);
+  show(roomCard, !inMatch);   // 試合中はルーム欄をたたむ（上部バーに状態を出す）
+  show(gameCard, inMatch);
 }
 function decorateRoom(room) {
   roomCodeSpan && (roomCodeSpan.textContent = room.code);
   roomCapacitySpan && (roomCapacitySpan.textContent = room.capacity);
-  roomStatusPill && (roomStatusPill.textContent = room.status);
+  setMatchState(room.status);
 
   if (memberList) {
     memberList.innerHTML = "";
     (room.members || []).forEach((m) => {
       const row = document.createElement("div");
       row.className = "member";
-      row.innerHTML = `<div>${escapeHtml(m.name)}</div><div class="muted" style="font-size:12px;">${(m.sid || "").slice(0,6)}</div>`;
+      row.innerHTML = `<div>${escapeHtml(m.name)}${m.sid === mySid ? "（あなた）" : ""}</div>`;
       memberList.appendChild(row);
     });
   }
@@ -519,6 +576,7 @@ function leaveToLobby() {
   show(resultCard, false);
   show(gameNotice, false);
   show(answerError, false);
+  show(matchBar, false);
   pendingAnswer = null;
   queueStatus && (queueStatus.textContent = "待機していません");
   show(lobbySec, true);

@@ -67,7 +67,12 @@
       box-shadow: 0 6px 18px rgba(67,96,255,.5);
       border:1px solid #6c83ff55;
     }
-    .title{ font-size:16px; font-weight:800; }
+    .title{ font-size:16px; font-weight:800; white-space:nowrap; }
+    header{ flex-wrap: wrap; row-gap: 8px; }
+    /* 試合中だけ出す、画面上部の固定バー（ヘッダーの2段目） */
+    .match-bar{ flex-basis:100%; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .match-bar .match-score{ font-size:13px; font-weight:700; flex:1; min-width:0; }
+    .match-bar button{ width:auto; padding:6px 10px; font-size:12px; }
     .hdr-right{ display:flex; align-items:center; gap:10px; }
     .pill { background: var(--pill); border:1px solid #2b3550; padding:6px 10px; border-radius:999px; font-size:12px; color:var(--txt-weak);}
     .muted{ color: var(--txt-weak); font-size:12px; }
@@ -247,10 +252,16 @@
       <div class="title">大喜利デュエル</div>
     </div>
     <div class="hdr-right">
-      <span class="pill">接続ID: <b id="mySid">-</b></span>
       <label class="muted" style="display:flex;align-items:center;gap:6px;">
         <input id="seToggle" type="checkbox" checked style="vertical-align:middle;"/> SE
       </label>
+    </div>
+    <!-- 試合中だけ出す：状態・残り時間・一本の数・退室 -->
+    <div id="matchBar" class="match-bar hidden">
+      <span id="matchState" class="pill status-live">対戦中</span>
+      <span id="countdownPill" class="pill"><span id="countdownLabel">残り </span><span id="countdown">--:--</span></span>
+      <span id="matchScore" class="match-score"></span>
+      <button id="matchLeaveBtn" class="ghost">退室</button>
     </div>
   </header>
 
@@ -260,14 +271,17 @@
       <h2 class="section-title">ロビー</h2>
       <div id="lobbyNotice" class="pill status-overtime hidden" style="margin-bottom:8px;"></div>
 
-      <div class="row" style="margin-top:8px;">
+      <div class="subcard">
+        <b>遊び方</b>
+        <ol style="margin:6px 0 0; padding-left:20px; font-size:14px; line-height:1.6;">
+          <li>お題が出たら、ボケた回答を何回でも送る</li>
+          <li>AIが10点満点で採点。<span class="js-threshold">7</span>点以上で「一本」</li>
+          <li>一本の数がいちばん多い人の勝ち（並んだら延長戦）</li>
+        </ol>
+      </div>
+
+      <div class="row" style="margin-top:12px;">
         <input id="nameInput" type="text" placeholder="プレイヤー名（例：けんじ）" />
-        <select id="capacitySelect">
-          <option value="2" selected>2人対戦</option>
-          <option value="3">3人対戦</option>
-          <option value="4">4人対戦</option>
-          <option value="5">5人対戦</option>
-        </select>
         <button id="saveNameBtn" class="ghost">名前をセット</button>
       </div>
 
@@ -290,6 +304,12 @@
         <div id="roomCodePanel" class="subcard hidden" role="tabpanel">
           <h3 style="margin:0 0 6px;">ルームコード</h3>
           <div class="row">
+            <select id="capacitySelect">
+              <option value="2" selected>2人対戦</option>
+              <option value="3">3人対戦</option>
+              <option value="4">4人対戦</option>
+              <option value="5">5人対戦</option>
+            </select>
             <button id="createRoomBtn" class="primary">ルーム作成</button>
             <span class="muted"> or </span>
             <input id="roomCodeInput" type="text" placeholder="招待コード（ABCD）" style="text-transform:uppercase;" />
@@ -305,7 +325,7 @@
       <div class="row" style="justify-content:space-between;">
         <h2 class="section-title" style="margin:0;">ルーム</h2>
         <div class="row">
-          <span id="roomStatusPill" class="pill status-wait">waiting</span>
+          <span id="roomStatusPill" class="pill status-wait">待機中</span>
           <button id="leaveRoomBtn" class="ghost">退室</button>
         </div>
       </div>
@@ -321,20 +341,17 @@
 
     <!-- ====== ゲーム ====== -->
     <section id="gameCard" class="card hidden">
-      <div class="row" style="justify-content:space-between;">
-        <h2 class="section-title" style="margin:0;">本戦 <span id="roundNo">1</span></h2>
-        <span class="pill"><span id="countdownLabel">残り </span><span id="countdown">--:--</span></span>
-      </div>
+      <!-- 残り時間と一本の数は、画面上部の固定バー（#matchBar）に出す -->
+      <div id="suddenBanner" class="pill hidden status-overtime" style="margin-bottom:8px;">サドンデス：次の一本で勝利！</div>
+      <div id="gameNotice" class="pill hidden status-wait" style="margin-bottom:8px;"></div>
 
-      <div id="suddenBanner" class="pill hidden status-overtime" style="margin-top:8px;">サドンデス：次の一本で勝利！</div>
-      <div id="gameNotice" class="pill hidden status-wait" style="margin-top:8px;"></div>
-
-      <div style="margin-top:8px;">
+      <div>
         <!-- 画像お題（DOMは残すが常に非表示にする想定） -->
         <img id="promptImage" class="prompt-img hidden" alt="" />
         <div id="imgCredit" class="credit hidden"></div>
         <!-- テキストお題 -->
-        <div id="promptText" style="font-size:20px; margin-top:8px;" class="hidden">—</div>
+        <div id="promptText" style="font-size:20px;" class="hidden">—</div>
+        <div class="muted" style="margin-top:4px;"><span class="js-threshold">7</span>点以上で「一本」。一本の数がいちばん多い人の勝ち</div>
       </div>
 
       <div class="row" style="margin-top:12px; align-items:flex-start;">
@@ -362,7 +379,7 @@
           <div class="subcard" style="margin-top:12px;">
             <div class="row" style="justify-content:space-between;">
               <b>スコアボード</b>
-              <span class="muted">IPPON閾値: <b id="targetIppon">7.0</b></span>
+              <span class="muted">一本ライン: <b id="targetIppon">7</b>点</span>
             </div>
             <div id="scoreBoard" class="list" style="margin-top:8px;"></div>
           </div>
