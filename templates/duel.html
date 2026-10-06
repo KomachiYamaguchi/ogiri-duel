@@ -145,9 +145,20 @@
     }
 
     /* ====== Lobby Tabs ====== */
+    /* 2つのタブはロビーの主役。横並びの大きなボタンにして、選ばれているほうを枠と文字の濃さで示す */
     .lobby-tabs{ display:flex; gap:8px; }
-    .lobby-tab{ flex:1; background: transparent; color: var(--txt-weak); }
-    .lobby-tab.active{ background: var(--pill); border-color: #496aff; color: var(--txt); }
+    .lobby-tab{
+      flex:1; min-height:68px; padding:10px 8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px;
+      background: transparent; color: var(--txt-weak); font-size:18px; line-height:1.25;
+    }
+    .lobby-tab .tab-sub{ font-size:12px; font-weight:400; }
+    .lobby-tab.active{ background: var(--pill); border:2px solid var(--accent); color: var(--txt); padding:9px 7px; }
+    .lobby-tab.active .tab-sub{ color: var(--txt-weak); }
+    /* ロビーの1行（入力欄＋ボタン）。スマホでも折り返さず、入力欄が残りの幅を使う */
+    .lobby-line{ display:flex; gap:8px; align-items:center; flex-wrap:nowrap; }
+    .lobby-line > input, .lobby-line > select{ flex:1; min-width:0; }
+    .lobby-line > button{ width:auto; flex-shrink:0; }
+    .lobby-line > .grow{ flex:1; }
 
     /* ====== Room / Members ====== */
     .member{
@@ -282,57 +293,56 @@
       <h2 class="section-title">ロビー</h2>
       <div id="lobbyNotice" class="pill status-overtime hidden" style="margin-bottom:8px;"></div>
 
-      <div class="subcard">
-        <b>遊び方</b>
-        <ol style="margin:6px 0 0; padding-left:20px; font-size:14px; line-height:1.6;">
-          <li>お題が出たら、ボケた回答を何回でも送る</li>
-          <li>AIが10点満点で採点。<span class="js-threshold">7</span>点以上で「一本」</li>
-          <li>一本の数がいちばん多い人の勝ち（並んだら延長戦）</li>
+      <div class="subcard" style="padding:10px 12px;">
+        <b style="font-size:13px;">遊び方</b>
+        <ol style="margin:4px 0 0; padding-left:18px; font-size:13px; line-height:1.5;">
+          <li>お題にボケた回答を何回でも送る</li>
+          <li>AIが採点。<span class="js-threshold">7</span>点以上で「一本」</li>
+          <li>一本が多い人の勝ち（同数なら延長戦）</li>
         </ol>
       </div>
 
-      <div class="row" style="margin-top:12px;">
-        <input id="nameInput" type="text" placeholder="プレイヤー名（例：けんじ）" />
+      <div class="lobby-line" style="margin-top:10px;">
+        <input id="nameInput" type="text" placeholder="名前（例：けんじ）" />
         <button id="saveNameBtn" class="ghost">名前をセット</button>
       </div>
 
-      <div class="lobby-tabs" role="tablist" style="margin-top:16px;">
-        <button type="button" class="lobby-tab active" role="tab" aria-selected="true" data-tab-target="quickPanel">クイックマッチ</button>
-        <button type="button" class="lobby-tab" role="tab" aria-selected="false" data-tab-target="roomCodePanel">ルームコード</button>
+      <div class="lobby-tabs" role="tablist" style="margin-top:14px;">
+        <button type="button" class="lobby-tab active" role="tab" aria-selected="true" data-tab-target="quickPanel">クイックマッチ<span class="tab-sub">知らない人と2人で</span></button>
+        <button type="button" class="lobby-tab" role="tab" aria-selected="false" data-tab-target="roomCodePanel">ルームコード<span class="tab-sub">友だちと2〜5人で</span></button>
       </div>
 
-      <div style="margin-top:12px;">
+      <div style="margin-top:10px;">
         <div id="quickPanel" class="subcard" role="tabpanel">
-          <h3 style="margin:0 0 6px;">クイックマッチ</h3>
-          <p class="muted" style="margin:0 0 8px;">2人が揃い次第、自動でマッチング（固定）。</p>
-          <div class="row">
-            <button id="joinQueueBtn" class="primary">クイックマッチ開始</button>
-            <button id="cancelQueueBtn" class="ghost">取り消し</button>
+          <button id="joinQueueBtn" class="primary" style="width:100%;">クイックマッチ開始</button>
+          <div class="lobby-line" style="margin-top:8px;">
             <span id="queueStatus" class="pill status-wait">待機していません</span>
+            <span class="grow"></span>
+            <button id="cancelQueueBtn" class="ghost btn-sm">取り消し</button>
           </div>
         </div>
 
         <div id="roomCodePanel" class="subcard hidden" role="tabpanel">
-          <h3 style="margin:0 0 6px;">ルームコード</h3>
-          <div class="row">
-            <select id="capacitySelect">
+          <div class="lobby-line">
+            <select id="capacitySelect" style="flex:0 0 auto;">
               <option value="2" selected>2人対戦</option>
               <option value="3">3人対戦</option>
               <option value="4">4人対戦</option>
               <option value="5">5人対戦</option>
             </select>
-            <button id="createRoomBtn" class="primary">ルーム作成</button>
-            <span class="muted"> or </span>
+            <button id="createRoomBtn" class="primary grow">ルーム作成</button>
+          </div>
+          <div class="lobby-line" style="margin-top:8px;">
             <input id="roomCodeInput" type="text" placeholder="招待コード（ABCD）" style="text-transform:uppercase;" />
             <button id="joinRoomBtn" class="ghost">参加</button>
           </div>
-          <p class="muted" style="margin-top:8px;">友だちと遊ぶときはルーム作成→コード共有→参加。</p>
+          <p class="muted" style="margin:8px 0 0;">ルームを作ってコードを送るか、もらったコードで参加。</p>
         </div>
       </div>
 
-      <!-- お題箱：押すとこの場で入力欄が開く（ポップアップは使わない） -->
+      <!-- お題箱：いちばん下に小さく。押すとこの場で入力欄が開く（ポップアップは使わない） -->
       <div style="margin-top:12px;">
-        <button id="topicBoxToggle" class="ghost" aria-expanded="false" aria-controls="topicBox">お題を投稿する</button>
+        <button id="topicBoxToggle" class="ghost btn-sm" aria-expanded="false" aria-controls="topicBox">お題を投稿する</button>
         <div id="topicBox" class="subcard hidden" style="margin-top:8px;">
           <p class="muted" style="margin:0 0 8px;">遊んでみたいお題を送ってください（5〜60文字）。</p>
           <div class="row" style="flex-wrap:nowrap; gap:8px;">
@@ -341,6 +351,7 @@
           </div>
           <div id="topicError" class="error-text hidden"></div>
           <div id="topicThanks" class="muted hidden" style="margin-top:6px;">投稿ありがとうございます！採用されると出題されます</div>
+          <p class="muted" style="margin:6px 0 0; font-size:11px;">人を傷つける内容、下品すぎる内容、実在の人物を扱ったお題は採用しません。</p>
         </div>
       </div>
     </section>
