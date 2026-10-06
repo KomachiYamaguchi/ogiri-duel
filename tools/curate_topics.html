@@ -64,6 +64,7 @@
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <label class="file-btn">候補JSONを読み込む<input id="fileInput" type="file" accept=".json,application/json" /></label>
       <button id="exportBtn" class="primary" disabled>採用分をJSONで書き出し</button>
+      <button id="exportDecisionsBtn" disabled>判定結果をJSONで書き出し</button>
     </div>
   </header>
 
@@ -80,11 +81,12 @@
 
     <section class="card" id="card">
       <div class="empty" id="emptyMsg">
-        tools/out/topic_stock_candidates.json を読み込んでください。<br />
+        tools/out/topic_stock_candidates.json（お題箱の投稿なら tools/out/topic_submissions_pending.json）を読み込んでください。<br />
         判定はこのブラウザに自動保存され、次に開いたときに続きから再開できます。
       </div>
       <span class="genre hidden" id="genre"></span>
       <div class="topic hidden" id="topic"></div>
+      <div class="muted hidden" id="note"></div>
       <div class="flag later hidden" id="laterFlag">あとで見る に回したお題です</div>
     </section>
 
@@ -134,6 +136,7 @@
       const loaded = !!S;
       $("statsWrap").classList.toggle("hidden", !loaded);
       $("exportBtn").disabled = !loaded || counts().ok === 0;
+      $("exportDecisionsBtn").disabled = !loaded;
       $("resetBtn").disabled = !loaded;
       $("undoBtn").disabled = !loaded || S.history.length === 0;
       if (!loaded) return;
@@ -150,11 +153,13 @@
       for (const id of ["ngBtn","laterBtn","okBtn"]) $(id).disabled = !cur;
       $("genre").classList.toggle("hidden", !cur);
       $("topic").classList.toggle("hidden", !cur);
+      $("note").classList.toggle("hidden", !(cur && cur.note));
       $("emptyMsg").classList.toggle("hidden", !!cur);
       $("laterFlag").classList.toggle("hidden", !(cur && S.decisions[cur.id] === "later"));
       if (cur){
         $("genre").textContent = cur.genre || "ジャンルなし";
         $("topic").textContent = cur.text;
+        $("note").textContent = cur.note || "";
       } else {
         $("emptyMsg").innerHTML = "すべて判定しました（採用 " + c.ok + " 件）。<br />「採用分をJSONで書き出し」で topic_stock.json を保存できます。";
       }
@@ -212,7 +217,11 @@
           const id = String(it.id || it.text);
           if (ids.has(id)) continue;
           ids.add(id);
-          items.push({ id, text: it.text.trim(), genre: it.genre || "" });
+          // note（投稿者など、画面に出すメモ）と submission_id（お題箱の投稿の番号）は、あれば残す
+          const item = { id, text: it.text.trim(), genre: it.genre || "" };
+          if (it.note) item.note = String(it.note);
+          if (it.submission_id != null) item.submission_id = it.submission_id;
+          items.push(item);
         }
         if (!items.length) { alert("お題が1件も見つかりませんでした。"); return; }
         load(items);
@@ -234,6 +243,16 @@
       const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob); a.download = "topic_stock.json";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+
+    // 判定結果（採用・不採用・あとで・未判定のすべて）。お題箱の投稿は tools/apply_topic_submissions.py に渡す
+    $("exportDecisionsBtn").addEventListener("click", () => {
+      const out = S.items.map(it => ({ ...it, decision: S.decisions[it.id] || null }));
+      const blob = new Blob([JSON.stringify(out, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob); a.download = "curate_decisions.json";
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     });

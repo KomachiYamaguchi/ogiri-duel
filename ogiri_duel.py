@@ -34,6 +34,10 @@ SELF_DUP_BONUS = float(os.environ.get("OGIRI_SELF_DUP_BONUS", "1.0"))
 
 QUICK_CAPACITY = 2
 RATE_LIMIT_SECONDS = float(os.environ.get("OGIRI_RATE_LIMIT_SECONDS", "1.0"))
+# お題箱（遊ぶ人がロビーからお題を投稿する）。投稿は保存するだけで、自動では出題しない
+TOPIC_SUBMIT_MIN_LEN = 5
+TOPIC_SUBMIT_MAX_LEN = 60
+TOPIC_SUBMIT_COOLDOWN_SEC = float(os.environ.get("OGIRI_TOPIC_SUBMIT_COOLDOWN_SEC", "30"))
 
 ALLOW_SKIP      = os.environ.get("OGIRI_ALLOW_SKIP", "1") == "1"
 SKIP_COOLDOWN   = int(os.environ.get("OGIRI_SKIP_COOLDOWN", "20"))
@@ -53,6 +57,7 @@ AB_LOG_PATH      = os.path.join(LOG_DIR, "ab_votes.jsonl")
 AB_ENRICHED_PATH = os.path.join(LOG_DIR, "ab_votes_enriched.jsonl")
 TOPIC_STATS_PATH = os.path.join(LOG_DIR, "topic_stats.json")
 MATCH_LOG_PATH   = os.path.join(LOG_DIR, "match_results.jsonl")
+TOPIC_SUBMISSION_LOG_PATH = os.path.join(LOG_DIR, "topic_submissions.jsonl")
 
 # ========= 記録の保存先（DATABASE_URL があれば Postgres、なければ logs/ のファイル） =========
 # 対象: topic_stats / segments / ab_votes / ab_votes_enriched / match_results（skip_log は今までどおりファイル）
@@ -997,6 +1002,7 @@ def on_disconnect():
     cleanup_sid(request.sid)
     sid_to_name.pop(request.sid, None)
     sid_to_device.pop(request.sid, None)
+    last_topic_submit_ts.pop(request.sid, None)
 
 @socketio.on("client_info")
 def on_client_info(data):
@@ -1023,6 +1029,31 @@ def on_set_name(data):
     name = (data or {}).get("name") or "匿名"
     sid_to_name[request.sid] = name
     emit("name_set", {"sid": request.sid, "name": name})
+
+# ---- お題箱 ----
+last_topic_submit_ts: Dict[str, float] = {}  # sid → 最後に投稿を受け付けた時刻
+
+@socketio.on("submit_topic")
+def on_submit_topic(data=None):
+    # 改行や続いた空白は1つの空白にまとめてから、文字数を数える
+    text = re.sub(r"\s+", " ", str((data or {}).get("text") or "")).strip()
+    if not text:
+        emit("topic_submit_error", {"message": "お題を入力してください。"}); return
+    if len(text) < TOPIC_SUBMIT_MIN_LEN:
+        emit("topic_submit_error", {"message": f"お題は{TOPIC_SUBMIT_MIN_LEN}文字以上で入力してください。"}); return
+    if len(text) > TOPIC_SUBMIT_MAX_LEN:
+        emit("topic_submit_error", {"message": f"お題は{TOPIC_SUBMIT_MAX_LEN}文字以内で入力してください（今は{len(text)}文字）。"}); return
+    now = time.time()
+    wait = TOPIC_SUBMIT_COOLDOWN_SEC - (now - last_topic_submit_ts.get(request.sid, 0.0))
+    if wait > 0:
+        emit("topic_submit_error", {"message": f"続けて投稿するときは、あと{math.ceil(wait)}秒待ってください。"}); return
+    last_topic_submit_ts[request.sid] = now
+    row = {"text": text, "name": sid_to_name.get(request.sid) or "匿名", "submitted_at": _utcnow_iso()}
+    if RECORD_STORE:
+        RECORD_STORE.insert_topic_submission(row)
+    else:
+        _log_append(TOPIC_SUBMISSION_LOG_PATH, {**row, "status": "未確認"})
+    emit("topic_submit_ok", {})
 
 # ---- クイックマッチ ----
 @socketio.on("join_queue")

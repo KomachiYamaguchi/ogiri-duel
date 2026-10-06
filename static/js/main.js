@@ -260,6 +260,46 @@ socket.on("config", (cfg) => {
 /* ---------- 名前 ---------- */
 saveNameBtn?.addEventListener("click", () => syncName(), { passive: true });
 
+/* ---------- お題箱（ロビーでお題を投稿。保存するだけで、自動では出題しない） ---------- */
+const topicBoxToggle = $("topicBoxToggle");
+const topicBox = $("topicBox");
+const topicInput = $("topicInput");
+const topicSubmitBtn = $("topicSubmitBtn");
+const topicError = $("topicError");
+const topicThanks = $("topicThanks");
+let pendingTopic = null;
+function topicMessage(message) {
+  show(topicThanks, false);
+  if (topicError) { topicError.textContent = message; show(topicError, !!message); }
+}
+topicBoxToggle?.addEventListener("click", () => {
+  const open = topicBox.classList.contains("hidden");
+  show(topicBox, open);
+  topicBoxToggle.setAttribute("aria-expanded", String(open));
+  if (open) topicInput?.focus();
+}, { passive: true });
+function submitTopic() {
+  const text = (topicInput?.value || "").replace(/\s+/g, " ").trim();
+  const len = [...text].length;  // サーバーと同じく、文字の数で数える（絵文字も1文字）
+  if (!text) return topicMessage("お題を入力してください。");
+  if (len < 5) return topicMessage("お題は5文字以上で入力してください。");
+  if (len > 60) return topicMessage(`お題は60文字以内で入力してください（今は${len}文字）。`);
+  syncName();  // 投稿者の名前として、入力中の名前を使う
+  if (send("submit_topic", { text })) { pendingTopic = text; topicMessage(""); }
+  else topicMessage("接続が切れています。つながってからもう一度送ってください。");
+}
+topicSubmitBtn?.addEventListener("click", submitTopic, { passive: true });
+topicInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) submitTopic(); });
+topicInput?.addEventListener("input", () => show(topicError, false), { passive: true });
+socket.on("topic_submit_error", ({ message }) => { pendingTopic = null; topicMessage(message || "送れませんでした。"); });
+socket.on("topic_submit_ok", () => {
+  // 送ったお題のままなら空にする（返事を待つ間に書き換えていたら残す）
+  if (topicInput && pendingTopic !== null && topicInput.value.replace(/\s+/g, " ").trim() === pendingTopic) topicInput.value = "";
+  pendingTopic = null;
+  show(topicError, false);
+  show(topicThanks, true);
+});
+
 /* ---------- クイック ---------- */
 joinQueueBtn?.addEventListener("click", () => { if (syncName()) send("join_queue", {}); }, { passive: true });
 cancelQueueBtn?.addEventListener("click", () => send("cancel_queue"), { passive: true });

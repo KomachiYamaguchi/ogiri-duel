@@ -1,7 +1,7 @@
 # record_store.py
 # -*- coding: utf-8 -*-
 """
-記録（topic_stats / segments / ab_votes / ab_votes_enriched / match_results）を Postgres に保存する。
+記録（topic_stats / segments / ab_votes / ab_votes_enriched / match_results / topic_submissions）を Postgres に保存する。
 
 - 環境変数 DATABASE_URL があるときだけ使う（ないときは ogiri_duel.py が今までどおり logs/ に保存する）
 - ドライバは pg8000（Python だけで書かれていて、eventlet の monkey_patch 後のソケットでそのまま動く）
@@ -102,6 +102,16 @@ SCHEMA_SQL = [
     "CREATE INDEX IF NOT EXISTS match_results_ended_at_idx ON match_results (ended_at)",
     # 各プレイヤーの端末の種類（players と同じ並びの配列。例 ["mobile","desktop"]）。既にある表にも足す。古い行は NULL のまま
     "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS devices jsonb",
+    # お題箱（遊ぶ人が投稿したお題）。自動では出題しない。tools/ のスクリプトで選別して、状態を 採用 / 不採用 にする
+    """CREATE TABLE IF NOT EXISTS topic_submissions (
+        id           bigserial PRIMARY KEY,
+        text         text NOT NULL,
+        name         text,
+        submitted_at timestamptz NOT NULL DEFAULT now(),
+        status       text NOT NULL DEFAULT '未確認' CHECK (status IN ('未確認', '採用', '不採用')),
+        reviewed_at  timestamptz
+    )""",
+    "CREATE INDEX IF NOT EXISTS topic_submissions_status_idx ON topic_submissions (status, submitted_at)",
 ]
 
 
@@ -237,6 +247,14 @@ class RecordStore:
                 devices=json.dumps(row.get("devices") or [], ensure_ascii=False),
                 started=row.get("started_at"), ended=row.get("ended_at"))
         self._submit("match_results", op)
+
+    def insert_topic_submission(self, row: Dict[str, Any]):
+        def op(conn):
+            conn.run(
+                """INSERT INTO topic_submissions (text, name, submitted_at)
+                   VALUES (:text, :name, CAST(:submitted AS timestamptz))""",
+                text=row.get("text"), name=row.get("name"), submitted=row.get("submitted_at"))
+        self._submit("topic_submissions", op)
 
     def flush(self, timeout: float = 30.0) -> bool:
         """キューが空になるまで待つ（テスト・終了処理用）。"""

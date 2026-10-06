@@ -329,6 +329,20 @@
           <p class="muted" style="margin-top:8px;">友だちと遊ぶときはルーム作成→コード共有→参加。</p>
         </div>
       </div>
+
+      <!-- お題箱：押すとこの場で入力欄が開く（ポップアップは使わない） -->
+      <div style="margin-top:12px;">
+        <button id="topicBoxToggle" class="ghost" aria-expanded="false" aria-controls="topicBox">お題を投稿する</button>
+        <div id="topicBox" class="subcard hidden" style="margin-top:8px;">
+          <p class="muted" style="margin:0 0 8px;">遊んでみたいお題を送ってください（5〜60文字）。</p>
+          <div class="row" style="flex-wrap:nowrap; gap:8px;">
+            <input id="topicInput" type="text" placeholder="例：こんな遊園地は嫌だ" style="flex:1; min-width:0;" />
+            <button id="topicSubmitBtn" class="primary" style="width:auto; flex-shrink:0;">送る</button>
+          </div>
+          <div id="topicError" class="error-text hidden"></div>
+          <div id="topicThanks" class="muted hidden" style="margin-top:6px;">投稿ありがとうございます！採用されると出題されます</div>
+        </div>
+      </div>
     </section>
 
     <!-- ====== 待機中（クイックマッチ） ====== -->
