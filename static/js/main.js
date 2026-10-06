@@ -78,6 +78,18 @@ const skipBox = $("skipBox");
 const skipBtn = $("skipBtn");
 const skipStatus = $("skipStatus");
 
+const connBanner = $("connBanner");
+const lobbyNotice = $("lobbyNotice");
+const gameNotice = $("gameNotice");
+const answerError = $("answerError");
+const resultCard = $("resultCard");
+const resultTitle = $("resultTitle");
+const resultReason = $("resultReason");
+const resultRanking = $("resultRanking");
+const resultNote = $("resultNote");
+const againBtn = $("againBtn");
+const toLobbyBtn = $("toLobbyBtn");
+
 /* ----- AB modal ----- */
 const abBackdrop = $("abBackdrop");
 const abModal = $("abModal");
@@ -98,6 +110,15 @@ let currentRoom = null;
 let countdownTimer = null;
 let currentRoundMode = "text";   // ★ 常にテキスト
 let votedSkip = false;
+let matchActive = false;         // 試合中（開始〜終了）か。切断時の表示に使う
+let myName = "";                 // 再接続したときに名前を送り直すため
+let pendingAnswer = null;        // 送信して、まだ「受け付けた」が返ってきていない回答
+let abStartTimer = null;         // 結果画面のあと AB 評価を始めるタイマー
+
+/* 端末の種類（ブラウザの情報で大まかに判定。勝敗の記録に残すだけ） */
+const DEVICE = (navigator.userAgentData && typeof navigator.userAgentData.mobile === "boolean")
+  ? (navigator.userAgentData.mobile ? "mobile" : "desktop")
+  : (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? "mobile" : "desktop");
 
 /* AB session state */
 let abCurrent = {
@@ -174,6 +195,21 @@ socket = io({
 
 socket.on("connected", (data) => { mySidSpan && (mySidSpan.textContent = data.sid); });
 
+/* 接続している間だけ送る（切れている間に押した操作が、つながったあとで急に届かないように） */
+function send(event, data) {
+  if (!socket.connected) return false;
+  // データなしのイベントは引数なしで送る（undefined を渡すと、引数を受け取らないサーバー側の処理がエラーになる）
+  if (data === undefined) socket.emit(event); else socket.emit(event, data);
+  return true;
+}
+
+socket.on("connect", () => {
+  show(connBanner, false);
+  document.body.classList.remove("offline");
+  socket.emit("client_info", { device: DEVICE });
+  if (myName) socket.emit("set_name", { name: myName });  // 再接続すると別人扱いになるので、名前を送り直す
+});
+
 // サーバ設定（画像UIは保険で隠す）
 socket.on("config", (cfg) => {
   show(promptImage, false);
@@ -183,25 +219,44 @@ socket.on("config", (cfg) => {
 /* ---------- 名前 ---------- */
 saveNameBtn?.addEventListener("click", () => {
   const name = (nameInput?.value || "").trim() || "匿名";
-  socket.emit("set_name", { name });
+  if (send("set_name", { name })) myName = name;
 }, { passive: true });
 
 /* ---------- クイック ---------- */
-joinQueueBtn?.addEventListener("click", () => socket.emit("join_queue", {}), { passive: true });
-cancelQueueBtn?.addEventListener("click", () => socket.emit("cancel_queue"), { passive: true });
-socket.on("queue_joined", () => { queueStatus && (queueStatus.textContent = "待機中：2人マッチ"); });
+joinQueueBtn?.addEventListener("click", () => send("join_queue", {}), { passive: true });
+cancelQueueBtn?.addEventListener("click", () => send("cancel_queue"), { passive: true });
+socket.on("queue_joined", () => { queueStatus && (queueStatus.textContent = "待機中：2人マッチ"); show(lobbyNotice, false); });
 socket.on("queue_canceled", () => { queueStatus && (queueStatus.textContent = "待機していません"); });
 
 /* ---------- ルーム ---------- */
 createRoomBtn?.addEventListener("click", () => {
   const cap = parseInt(capacitySelect?.value || "2", 10);
-  socket.emit("create_room", { capacity: cap });
+  send("create_room", { capacity: cap });
 }, { passive: true });
 joinRoomBtn?.addEventListener("click", () => {
   const code = (roomCodeInput?.value || "").toUpperCase();
-  if (code) socket.emit("join_room_code", { code });
+  if (code) send("join_room_code", { code });
 }, { passive: true });
-leaveRoomBtn?.addEventListener("click", () => socket.emit("leave_room"), { passive: true });
+/* 退室：サーバーに知らせて、返事を待たずにロビーへ戻る（サーバーからも left_room が届く） */
+leaveRoomBtn?.addEventListener("click", () => { if (send("leave_room")) leaveToLobby(); }, { passive: true });
+socket.on("left_room", () => leaveToLobby());
+
+/* 結果画面のボタン */
+againBtn?.addEventListener("click", () => {
+  // join_queue はサーバー側で今の部屋から抜けてから待ち行列に入る
+  if (!send("join_queue", {})) return;
+  leaveToLobby();
+  queueStatus && (queueStatus.textContent = "待機中：2人マッチ");
+}, { passive: true });
+toLobbyBtn?.addEventListener("click", () => { if (send("leave_room")) leaveToLobby(); }, { passive: true });
+
+/* ほかの人が抜けたとき（勝敗の扱いは変えない。表示だけ） */
+socket.on("player_left", ({ name }) => {
+  const msg = `${name || "匿名"}さんが退出しました`;
+  if (!resultCard.classList.contains("hidden")) { resultNote.textContent = msg; show(resultNote, true); }
+  else if (!gameCard.classList.contains("hidden")) { gameNotice.textContent = msg; show(gameNotice, true); }
+  else if (roomMessage) { roomMessage.textContent = msg; }
+});
 
 socket.on("room_created", (room) => enterRoom(room));
 socket.on("room_joined", (room) => enterRoom(room));
@@ -214,8 +269,10 @@ socket.on("matched", (room) => { enterRoom(room); });
 
 /* ---------- ゲーム ---------- */
 socket.on("game_started", (room) => {
+  matchActive = true;
   enterRoom(room);
   show(gameCard, true);
+  show(gameNotice, false);
 });
 
 socket.on("overtime_started", (p) => {
@@ -234,16 +291,48 @@ socket.on("judging_started", () => {
   if (skipBtn) skipBtn.disabled = true;
 });
 
-socket.on("match_over", ({ winner, board }) => {
+socket.on("match_over", ({ winner, board, summary }) => {
+  matchActive = false;
   stopCountdown();
   show($("countdownLabel"), false);
   if (countdownSpan) countdownSpan.textContent = "試合終了";
+  if (submitAnswerBtn) submitAnswerBtn.disabled = true;  // 試合が終わったら送れない
+  if (skipBtn) skipBtn.disabled = true;
   renderBoard(board, null);
-  const msg = winner ? `勝者：${winner.name}（${winner.ippon} 本 / ${winner.points.toFixed(1)}点）` : "引き分け";
-  alert(msg);
-  // AB評価
-  startABSession();
+  showResult(winner, board, summary);
+  // 結果を見てもらってから、AB評価を自動で始める（スキップできる）
+  if (abStartTimer) clearTimeout(abStartTimer);
+  abStartTimer = setTimeout(() => { abStartTimer = null; if (!resultCard.classList.contains("hidden")) startABSession(); }, 2500);
 });
+
+/* 結果画面：順位・一本の数・点数・勝敗の理由・各自のいちばん良かった回答 */
+function showResult(winner, board, summary) {
+  const ranking = summary?.ranking || Object.entries(board || {})
+    .sort((a, b) => b[1].ippon - a[1].ippon || b[1].points - a[1].points)
+    .map(([sid, v], i) => ({ rank: i + 1, sid, name: v.name, ippon: v.ippon, points: v.points, best: null }));
+  resultTitle.textContent = winner ? `勝者：${winner.name}` : "引き分け";
+  resultReason.textContent = summary?.reason || "";
+  const mySid = mySidSpan?.textContent || "";
+  resultRanking.innerHTML = "";
+  for (const r of ranking) {
+    const row = document.createElement("div");
+    row.className = "subcard";
+    const best = r.best
+      ? `いちばん良かった回答：「${escapeHtml(r.best.text)}」（${Number(r.best.score).toFixed(1)}点${r.best.ippon ? "・一本" : ""}）<br><span class="muted">お題：${escapeHtml(r.best.prompt || "")}</span>`
+      : `<span class="muted">採点された回答はありません</span>`;
+    row.innerHTML = `<div class="row" style="justify-content:space-between;">
+        <b>${r.rank}位　${escapeHtml(r.name)}${r.sid === mySid ? "（あなた）" : ""}</b>
+        <span>${r.ippon} 本 / ${Number(r.points).toFixed(1)} 点</span>
+      </div>
+      <div style="margin-top:6px; font-size:14px;">${best}</div>`;
+    resultRanking.appendChild(row);
+  }
+  show(resultNote, false);
+  show(gameCard, false);
+  show(roomCard, false);
+  show(resultCard, true);
+  resultCard.scrollIntoView({ block: "start" });
+}
 
 /* ---------- ラウンド開始 ---------- */
 socket.on("round_started", (payload) => {
@@ -279,7 +368,7 @@ socket.on("round_started", (payload) => {
 /* ---------- お題変更投票 ---------- */
 skipBtn?.addEventListener("click", () => {
   if (skipBtn.disabled) return;
-  socket.emit("skip_vote");
+  if (!send("skip_vote")) return;
   votedSkip = true;
   skipBtn.disabled = true;
 }, { passive: true });
@@ -324,12 +413,21 @@ socket.on("round_ended", ({ answers }) => {
 submitAnswerBtn?.addEventListener("click", () => {
   const text = (answerInput?.value || "").trim();
   if (!text) return;
-  socket.emit("submit_answer", { text });
-  if (answerInput) answerInput.value = "";
+  // 入力欄は、サーバーから「受け付けた」が返ってきてから空にする（断られたときに文章が消えないように）
+  if (send("submit_answer", { text })) pendingAnswer = text;
 }, { passive: true });
 
-socket.on("answer_error", ({ message }) => alert(message));
+/* エラーはポップアップでなく、入力欄の下に小さく出す */
+socket.on("answer_error", ({ message }) => {
+  pendingAnswer = null;
+  if (answerError) { answerError.textContent = message || "送信できませんでした。"; show(answerError, true); }
+});
+answerInput?.addEventListener("input", () => show(answerError, false), { passive: true });
 socket.on("answer_accepted", ({ text, seq }) => {
+  // 送った文章のままなら空にする（返事を待つ間に書き足していたら残す）
+  if (answerInput && pendingAnswer !== null && answerInput.value.trim() === pendingAnswer) answerInput.value = "";
+  pendingAnswer = null;
+  show(answerError, false);
   const div = document.createElement("div");
   div.className = "answer";
   div.textContent = `#${seq} 自分: ${text}`;
@@ -384,8 +482,10 @@ function enterRoom(room) {
   currentRoom = room;
   decorateRoom(room);
   show(lobbySec, false);
+  show(lobbyNotice, false);
+  show(resultCard, false);
   show(roomCard, true);
-  show(gameCard, room.status === "playing" || room.status === "overtime");
+  show(gameCard, ["playing", "overtime", "judging"].includes(room.status));
 }
 function decorateRoom(room) {
   roomCodeSpan && (roomCodeSpan.textContent = room.code);
@@ -410,9 +510,17 @@ function decorateRoom(room) {
 }
 function leaveToLobby() {
   currentRoom = null;
+  matchActive = false;
   stopCountdown();
+  if (abStartTimer) { clearTimeout(abStartTimer); abStartTimer = null; }
+  closeAB();
   show(gameCard, false);
   show(roomCard, false);
+  show(resultCard, false);
+  show(gameNotice, false);
+  show(answerError, false);
+  pendingAnswer = null;
+  queueStatus && (queueStatus.textContent = "待機していません");
   show(lobbySec, true);
 }
 
@@ -443,8 +551,15 @@ window.addEventListener("touchmove", () => {}, { passive: true });
 
 /* ---------- disconnect ---------- */
 socket.on("disconnect", () => {
+  const wasInMatch = matchActive;
   leaveToLobby();
-  if (queueStatus) queueStatus.textContent = "待機していません";
+  // つながるまで画面上部に帯を出し、ボタンを押せなくする（body.offline）
+  show(connBanner, true);
+  document.body.classList.add("offline");
+  if (wasInMatch && lobbyNotice) {
+    lobbyNotice.textContent = "試合から切断されました。";
+    show(lobbyNotice, true);
+  }
 });
 
 /* =========================================================
@@ -454,7 +569,7 @@ socket.on("disconnect", () => {
 /* 開始リクエスト（試合終了時に自動呼び出し） */
 function startABSession() {
   openAB(false);
-  socket.emit("ab_request", {});
+  send("ab_request", {});
 }
 
 /* サーバ：セッション開始（文脈表示） */
@@ -485,10 +600,10 @@ socket.on("ab_offer", ({ pair_id, left, right, prompt, meta }) => {
 /* サーバ：完了 */
 socket.on("ab_thanks", () => {
   closeAB();
-  setTimeout(() => alert("ご協力ありがとうございました！（学習用ログに保存しました）"), 100);
+  if (!resultCard.classList.contains("hidden")) { resultNote.textContent = "評価へのご協力ありがとうございました。"; show(resultNote, true); }
 });
 
-/* エラー */
+/* エラー（評価できるペアがないなど）。ポップアップは出さない */
 socket.on("ab_error", ({ message }) => {
   console.warn("[AB] error:", message);
   closeAB();
@@ -498,7 +613,7 @@ socket.on("ab_error", ({ message }) => {
 function sendAbVote(choice) {
   if (!abCurrent.pairId) return;
   const rt = Math.max(0, Math.round(performance.now() - (abCurrent.t0 || performance.now())));
-  socket.emit("ab_vote", {
+  send("ab_vote", {
     pair_id: abCurrent.pairId,
     choice,
     rt_ms: rt

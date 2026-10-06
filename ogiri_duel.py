@@ -438,6 +438,7 @@ class Room:
         self.match_started_at: Optional[str] = None
         self.went_overtime = False
         self.match_recorded = False              # 勝敗を記録済みか（二重記録の防止）
+        self.devices: Dict[str, str] = {}        # sid → 端末の種類（試合開始時に決める）
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
         self.pending_scores: Set[str] = set()    # 受け付けたが採点が終わっていない回答のID
@@ -462,6 +463,7 @@ class Room:
 rooms: Dict[str, Room] = {}
 sid_to_room: Dict[str, str] = {}
 sid_to_name: Dict[str, str] = {}
+sid_to_device: Dict[str, str] = {}  # sid → "mobile" / "desktop" / "unknown"
 quick_queue: List[dict] = []
 
 # ========= AB評価：サーバ内セッション =========
@@ -659,8 +661,18 @@ def cleanup_sid(sid: str):
     ab_sessions.pop(sid, None)
     if not code: return
     room = rooms.get(code); sid_to_room.pop(sid, None)
+    # Socket.IO の部屋からも外す（外さないと、抜けたあとも元の部屋の通知が届き続ける）
+    try:
+        leave_room(code, sid=sid, namespace="/")
+    except Exception:
+        pass
     if not room: return
+    left_name = next((m["name"] for m in room.members if m["sid"] == sid), sid_to_name.get(sid, "匿名"))
     room.members = [m for m in room.members if m["sid"] != sid]
+    if room.members:
+        # 残っている人に知らせる（試合の勝敗の扱いは変えない。表示のためだけ）
+        socketio.emit("player_left", {"name": left_name,
+                                      "during_match": room.status in ("playing", "overtime", "judging")}, room=code)
     if len(room.members) == 0:
         prev_status = room.status
         room.status = "closed"; rooms.pop(code, None); socketio.emit("room_closed", {"code": code})
@@ -735,7 +747,8 @@ def start_battle(room: Room):
     room.went_overtime = False
     room.match_recorded = False
     room.pending_scores = set(); room.uncounted_scores = set(); room.judging_phase = None
-    room.board ={m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
+    room.devices = {m["sid"]: sid_to_device.get(m["sid"], "unknown") for m in room.members}  # 試合開始時の端末の種類
+    room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
     start_round(room, BATTLE_SECONDS, pick_new_prompt=True)
     socketio.start_background_task(_game_loop, room)
@@ -791,13 +804,51 @@ def _sole_leader(room: Room) -> Optional[str]:
     leaders = [sid for sid, v in room.board.items() if v["ippon"] == top]
     return leaders[0] if len(leaders) == 1 else None
 
+RESULT_REASONS = {
+    ("win", "round_end"): "一本の数がいちばん多かったため",
+    ("win", "overtime_ippon"): "延長戦で一本を取ったため",
+    ("win", "overtime_timeup"): "延長戦の終了時点で、一本の数がいちばん多かったため",
+    ("draw", "round_end"): "参加者がいなかったため",
+    ("draw", "overtime_ippon"): "延長戦で一本が出たが、一本の数がまだ並んでいたため",
+    ("draw", "overtime_timeup"): "延長戦でも一本の数が並んだため",
+}
+
+def _best_answers(room: Room) -> Dict[str, dict]:
+    """プレイヤーごとの、勝敗に入った採点でいちばん点の高い回答（試合のすべてのお題から）。"""
+    best: Dict[str, dict] = {}
+    segs = list(room.completed_segments) + ([room.current_segment] if room.current_segment else [])
+    for seg in segs:
+        for a in seg.get("answers", []):
+            sc = a.get("score") or {}
+            if sc.get("score") is None or sc.get("counted") is False: continue
+            cur = best.get(a["sid"])
+            if cur is None or sc["score"] > cur["score"]:
+                best[a["sid"]] = {"text": a["text"], "score": sc["score"], "ippon": bool(sc.get("ippon")),
+                                  "prompt": seg.get("prompt_text", "")}
+    return best
+
+def _match_summary(room: Room, result: str, winner_sid: Optional[str], reason: str) -> dict:
+    """結果画面用：順位（一本の数→点数の合計の順）、勝敗の理由、各自のいちばん良かった回答。"""
+    best = _best_answers(room)
+    order = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
+    ranking, prev_key, rank = [], None, 0
+    for i, (sid, v) in enumerate(order, 1):
+        key = (v["ippon"], round(float(v["points"]), 2))
+        if key != prev_key: rank = i; prev_key = key   # 一本の数と点数が同じなら同じ順位
+        ranking.append({"rank": rank, "sid": sid, "name": v["name"], "ippon": v["ippon"],
+                        "points": round(float(v["points"]), 2), "winner": sid == winner_sid, "best": best.get(sid)})
+    return {"result": result, "reason": RESULT_REASONS.get((result, reason), ""), "end_reason": reason,
+            "overtime": room.went_overtime, "ranking": ranking}
+
 def _end_match(room: Room, reason: str):
     """試合を終える。勝者を決めて match_over を送り、そのときのスコアボードで勝敗を記録する。"""
     winner_sid = _sole_leader(room)
     room.status = "ended"
     w = room.board.get(winner_sid) if winner_sid else None
-    socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board}, room=room.code)
-    _record_match_result(room, "win" if w else "draw", winner_sid, reason)
+    result = "win" if w else "draw"
+    socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board,
+                                 "summary": _match_summary(room, result, winner_sid, reason)}, room=room.code)
+    _record_match_result(room, result, winner_sid, reason)
 
 def _record_match_result(room: Room, result: str, winner_sid: Optional[str], reason: str):
     """勝敗の記録（1試合1回）。result: win / draw / abandoned（全員が途中で抜けた）"""
@@ -813,8 +864,10 @@ def _record_match_result(room: Room, result: str, winner_sid: Optional[str], rea
         "winner_name": w["name"] if w else None,
         "overtime": room.went_overtime,
         "end_reason": reason,   # round_end / overtime_ippon / overtime_timeup / all_left
-        "players": [{"sid": sid, "name": v["name"], "ippon": v["ippon"], "points": round(float(v["points"]), 2)}
+        "players": [{"sid": sid, "name": v["name"], "ippon": v["ippon"], "points": round(float(v["points"]), 2),
+                     "device": room.devices.get(sid, "unknown")}
                     for sid, v in room.board.items()],
+        "devices": [room.devices.get(sid, "unknown") for sid in room.board],  # 端末の種類（players と同じ並び）
         "started_at": room.match_started_at,
         "ended_at": _utcnow_iso(),
     }
@@ -919,6 +972,14 @@ def on_connect():
 @socketio.on("disconnect")
 def on_disconnect():
     cleanup_sid(request.sid)
+    sid_to_name.pop(request.sid, None)
+    sid_to_device.pop(request.sid, None)
+
+@socketio.on("client_info")
+def on_client_info(data):
+    # 端末の種類（ブラウザの情報からの大まかな判定。勝敗の記録に残すだけ）
+    device = (data or {}).get("device")
+    sid_to_device[request.sid] = device if device in ("mobile", "desktop") else "unknown"
 
 @socketio.on("set_name")
 def on_set_name(data):
@@ -947,7 +1008,7 @@ def on_join_queue(_):
         start_battle(room)
 
 @socketio.on("cancel_queue")
-def on_cancel_queue():
+def on_cancel_queue(_data=None):
     global quick_queue
     quick_queue = [x for x in quick_queue if x["sid"] != request.sid]
     emit("queue_canceled", {})
@@ -982,8 +1043,9 @@ def on_join_room_code(data):
         start_battle(room)
 
 @socketio.on("leave_room")
-def on_leave_room():
+def on_leave_room(_data=None):
     cleanup_sid(request.sid)
+    emit("left_room", {})  # 本人の画面をロビーに戻す
 
 # ---- 回答/採点 ----
 @socketio.on("submit_answer")
@@ -1065,7 +1127,7 @@ def on_submit_answer(data):
 
 # ---- お題変更投票 ----
 @socketio.on("skip_vote")
-def on_skip_vote():
+def on_skip_vote(_data=None):
     if not ALLOW_SKIP: return
     code = sid_to_room.get(request.sid)
     if not code: return

@@ -100,6 +100,8 @@ SCHEMA_SQL = [
         created_at  timestamptz NOT NULL DEFAULT now()
     )""",
     "CREATE INDEX IF NOT EXISTS match_results_ended_at_idx ON match_results (ended_at)",
+    # 各プレイヤーの端末の種類（players と同じ並びの配列。例 ["mobile","desktop"]）。既にある表にも足す。古い行は NULL のまま
+    "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS devices jsonb",
 ]
 
 
@@ -224,14 +226,15 @@ class RecordStore:
         def op(conn):
             conn.run(
                 """INSERT INTO match_results (match_id, room_code, result, is_draw, winner_sid, winner_name,
-                                              overtime, end_reason, players, started_at, ended_at)
+                                              overtime, end_reason, players, devices, started_at, ended_at)
                    VALUES (:mid, :code, :result, :draw, :wsid, :wname, :ot, :reason, CAST(:players AS jsonb),
-                           CAST(:started AS timestamptz), CAST(:ended AS timestamptz))
+                           CAST(:devices AS jsonb), CAST(:started AS timestamptz), CAST(:ended AS timestamptz))
                    ON CONFLICT (match_id) DO NOTHING""",
                 mid=row.get("match_id"), code=row.get("room_code"), result=row.get("result"),
                 draw=bool(row.get("is_draw")), wsid=row.get("winner_sid"), wname=row.get("winner_name"),
                 ot=bool(row.get("overtime")), reason=row.get("end_reason"),
                 players=json.dumps(row.get("players") or [], ensure_ascii=False),
+                devices=json.dumps(row.get("devices") or [], ensure_ascii=False),
                 started=row.get("started_at"), ended=row.get("ended_at"))
         self._submit("match_results", op)
 

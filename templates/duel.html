@@ -156,6 +156,11 @@
     /* ====== Utility ====== */
     .hidden{ display:none !important; }
 
+    /* ====== 接続が切れているとき ====== */
+    .conn-banner{ position: sticky; top: 0; z-index: 2000; text-align:center; padding:8px 12px; font-size:14px; border-radius:0; }
+    body.offline main, body.offline .modal{ pointer-events:none; opacity:.55; }  /* つながるまで押せない */
+    .error-text{ color: var(--danger); font-size:12px; margin-top:6px; }
+
     /* ====== IPPON / Score Pop（既存JS用） ====== */
     .answer-item{ position: relative; overflow: visible; }
     .ippon-burst{
@@ -232,6 +237,9 @@
   </script>
 </head>
 <body>
+  <!-- 接続が切れている間だけ出す -->
+  <div id="connBanner" class="conn-banner pill status-overtime hidden">再接続中…</div>
+
   <!-- ====== Header ====== -->
   <header>
     <div class="brand">
@@ -250,6 +258,7 @@
     <!-- ====== ロビー ====== -->
     <section id="lobby" class="card">
       <h2 class="section-title">ロビー</h2>
+      <div id="lobbyNotice" class="pill status-overtime hidden" style="margin-bottom:8px;"></div>
 
       <div class="row" style="margin-top:8px;">
         <input id="nameInput" type="text" placeholder="プレイヤー名（例：けんじ）" />
@@ -318,6 +327,7 @@
       </div>
 
       <div id="suddenBanner" class="pill hidden status-overtime" style="margin-top:8px;">サドンデス：次の一本で勝利！</div>
+      <div id="gameNotice" class="pill hidden status-wait" style="margin-top:8px;"></div>
 
       <div style="margin-top:8px;">
         <!-- 画像お題（DOMは残すが常に非表示にする想定） -->
@@ -331,6 +341,7 @@
         <!-- 左：自分の回答 -->
         <div style="flex:2; min-width:280px;">
           <textarea id="answerInput" placeholder="ここに書いて送信"></textarea>
+          <div id="answerError" class="error-text hidden"></div>
           <div class="row" style="margin-top:8px;">
             <button id="submitAnswerBtn" class="primary">回答を送信</button>
           </div>
@@ -358,6 +369,18 @@
         </div>
       </div>
     </section>
+
+    <!-- ====== 結果 ====== -->
+    <section id="resultCard" class="card hidden">
+      <h2 class="section-title" id="resultTitle">試合終了</h2>
+      <div class="muted" id="resultReason"></div>
+      <div class="list" id="resultRanking" style="margin-top:12px;"></div>
+      <div class="row" style="margin-top:16px;">
+        <button id="againBtn" class="primary">もう1回（クイックマッチ）</button>
+        <button id="toLobbyBtn" class="ghost">ロビーへ</button>
+      </div>
+      <div id="resultNote" class="muted hidden" style="margin-top:8px;"></div>
+    </section>
   </main>
 
   <!-- ====== AB評価モーダル（ゲーム終了後に3ペア提示） ====== -->
@@ -367,9 +390,9 @@
       <div class="ab-head">
         <div>
           <b>AI改善にご協力を🙏（A/B評価）</b>
-          <div class="muted">良いと思った方を選んでください（3ペア・同点ボタンあり／対戦結果には影響しません）</div>
+          <div class="muted">良いと思った方を選んでください（同点ボタンあり／対戦結果には影響しません）</div>
         </div>
-        <button id="abCloseBtn" class="x" title="閉じる">✕</button>
+        <button id="abCloseBtn" class="ghost" title="評価をやめる">スキップ</button>
       </div>
 
       <div id="abContext">
