@@ -25,6 +25,8 @@ BATTLE_SECONDS    = int(os.environ.get("OGIRI_SECONDS", "180"))
 OVERTIME_SECONDS  = int(os.environ.get("OGIRI_OVERTIME_SECONDS", "90"))
 # 時間切れのとき、締め切りまでに受け付けた回答の採点を待つ最大の秒数（待ったあとで勝敗を決める）
 JUDGE_SCORE_WAIT_SEC = float(os.environ.get("OGIRI_SCORE_WAIT_SEC", "10"))
+# メンバーがそろってからお題が出るまでのカウントダウンの秒数（ラウンドの時間には含めない）
+MATCH_COUNTDOWN_SEC = float(os.environ.get("OGIRI_START_COUNTDOWN_SEC", "3"))
 
 DUP_THRESH     = float(os.environ.get("OGIRI_DUP_THRESH", "0.76"))
 DUP_MAX        = float(os.environ.get("OGIRI_DUP_MAX", "6.0"))
@@ -439,6 +441,7 @@ class Room:
         self.went_overtime = False
         self.match_recorded = False              # 勝敗を記録済みか（二重記録の防止）
         self.devices: Dict[str, str] = {}        # sid → 端末の種類（試合開始時に決める）
+        self.is_quick = False                    # クイックマッチの部屋か（開始時の表示の出し分け）
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
         self.pending_scores: Set[str] = set()    # 受け付けたが採点が終わっていない回答のID
@@ -700,7 +703,8 @@ def cooldown_remaining(room: Room) -> int:
     return max(0, int(room.skip_cooldown_until - time.time()))
 
 def send_skip_progress(room: Room):
-    socketio.emit("skip_progress", {"voters": len(room.skip_votes),"need": required_votes(room),"cooldown": cooldown_remaining(room)}, room=room.code)
+    socketio.emit("skip_progress", {"voters": len(room.skip_votes),"need": required_votes(room),"cooldown": cooldown_remaining(room),
+                                    "voter_sids": list(room.skip_votes)}, room=room.code)  # 自分が押したかを画面で判断するため
 
 def _tick_cooldown(room: Room):
     while True:
@@ -741,6 +745,21 @@ def start_round(room: Room, duration_sec: Optional[int], pick_new_prompt: bool):
     }, room=room.code)
 
 def start_battle(room: Room):
+    """メンバーがそろったら、カウントダウン（MATCH_COUNTDOWN_SEC 秒）のあとで試合を始める。
+    カウントダウンの間は status="starting"。この時間はラウンドの時間に含めない（ラウンドはお題が出てから数える）。"""
+    room.status = "starting"
+    socketio.emit("game_starting", {"seconds": MATCH_COUNTDOWN_SEC, "quick": room.is_quick, "room": room.to_public()},
+                  room=room.code)
+    socketio.start_background_task(_start_after_countdown, room)
+
+def _start_after_countdown(room: Room):
+    socketio.sleep(MATCH_COUNTDOWN_SEC)
+    # カウントダウン中に全員が抜けた・部屋が閉じたときは始めない
+    if room.status != "starting" or not room.members or rooms.get(room.code) is not room:
+        return
+    _begin_battle(room)
+
+def _begin_battle(room: Room):
     room.status="playing"; room.round_no=1
     room.match_id = f"{room.code}-{uuid.uuid4().hex[:8]}"
     room.match_started_at = _utcnow_iso()
@@ -751,6 +770,7 @@ def start_battle(room: Room):
     room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
     start_round(room, BATTLE_SECONDS, pick_new_prompt=True)
+    send_skip_progress(room)  # お題変更に必要な人数を最初から表示するため
     socketio.start_background_task(_game_loop, room)
 
 def start_overtime(room: Room):
@@ -828,14 +848,17 @@ def _best_answers(room: Room) -> Dict[str, dict]:
     return best
 
 def _match_summary(room: Room, result: str, winner_sid: Optional[str], reason: str) -> dict:
-    """結果画面用：順位（一本の数→点数の合計の順）、勝敗の理由、各自のいちばん良かった回答。"""
+    """結果画面用：順位（一本の数→点数の合計の順）、勝敗の理由、各自のいちばん良かった回答。
+    引き分けのときは順位を付けず（rank=None）、参加した順に全員を同じ扱いで並べる。"""
     best = _best_answers(room)
-    order = sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
+    is_draw = result == "draw"
+    order = list(room.board.items()) if is_draw else \
+        sorted(room.board.items(), key=lambda kv: (-kv[1]["ippon"], -kv[1]["points"]))
     ranking, prev_key, rank = [], None, 0
     for i, (sid, v) in enumerate(order, 1):
         key = (v["ippon"], round(float(v["points"]), 2))
         if key != prev_key: rank = i; prev_key = key   # 一本の数と点数が同じなら同じ順位
-        ranking.append({"rank": rank, "sid": sid, "name": v["name"], "ippon": v["ippon"],
+        ranking.append({"rank": None if is_draw else rank, "sid": sid, "name": v["name"], "ippon": v["ippon"],
                         "points": round(float(v["points"]), 2), "winner": sid == winner_sid, "best": best.get(sid)})
     return {"result": result, "reason": RESULT_REASONS.get((result, reason), ""), "end_reason": reason,
             "overtime": room.went_overtime, "ranking": ranking}
@@ -998,7 +1021,7 @@ def on_join_queue(_):
     if len(quick_queue) >= QUICK_CAPACITY:
         group = quick_queue[:QUICK_CAPACITY]; quick_queue = quick_queue[QUICK_CAPACITY:]
         code = generate_room_code()
-        room = Room(code, capacity=QUICK_CAPACITY); rooms[code] = room
+        room = Room(code, capacity=QUICK_CAPACITY); room.is_quick = True; rooms[code] = room
         for m in group:
             join_room(code, sid=m["sid"])
             room.members.append({"sid": m["sid"], "name": m["name"], "joined_at": datetime.utcnow().isoformat()})

@@ -73,6 +73,16 @@
     .match-bar{ flex-basis:100%; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
     .match-bar .match-score{ font-size:13px; font-weight:700; flex:1; min-width:0; }
     .match-bar button{ width:auto; padding:6px 10px; font-size:12px; }
+
+    /* 待機中・開始前のカウントダウン（大きな表示） */
+    .center-card{ text-align:center; padding:28px 16px; }
+    .spinner{ width:48px; height:48px; margin:0 auto 14px; border-radius:50%;
+      border:4px solid var(--line-2); border-top-color: var(--accent); animation: spin 1s linear infinite; }
+    @keyframes spin{ to{ transform: rotate(360deg); } }
+    .big-number{ font-size:64px; font-weight:900; line-height:1.1; margin:8px 0; font-variant-numeric: tabular-nums; }
+    .elapsed{ font-size:28px; font-weight:800; font-variant-numeric: tabular-nums; margin:4px 0 16px; }
+    /* 小さめのボタン（スマホでも横いっぱいにしない） */
+    .btn-sm{ width:auto !important; padding:6px 10px; font-size:12px; white-space:nowrap; flex-shrink:0; }
     .hdr-right{ display:flex; align-items:center; gap:10px; }
     .pill { background: var(--pill); border:1px solid #2b3550; padding:6px 10px; border-radius:999px; font-size:12px; color:var(--txt-weak);}
     .muted{ color: var(--txt-weak); font-size:12px; }
@@ -320,6 +330,21 @@
       </div>
     </section>
 
+    <!-- ====== 待機中（クイックマッチ） ====== -->
+    <section id="waitingCard" class="card center-card hidden">
+      <div class="spinner" aria-hidden="true"></div>
+      <div style="font-size:18px; font-weight:700;">相手を探しています…</div>
+      <div class="elapsed" id="waitElapsed">0:00</div>
+      <button id="waitCancelBtn" class="ghost">キャンセル</button>
+    </section>
+
+    <!-- ====== 開始前のカウントダウン ====== -->
+    <section id="startCard" class="card center-card hidden">
+      <div id="startTitle" style="font-size:20px; font-weight:800;">相手が見つかりました！</div>
+      <div class="big-number" id="startCount">3</div>
+      <div class="muted">まもなくお題が出ます</div>
+    </section>
+
     <!-- ====== ルーム ====== -->
     <section id="roomCard" class="card hidden">
       <div class="row" style="justify-content:space-between;">
@@ -331,7 +356,12 @@
       </div>
 
       <div style="margin-top:8px; display:flex; gap:10px; flex-wrap:wrap;">
-        <div>コード: <span id="roomCode" class="room-code">----</span></div>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          コード: <span id="roomCode" class="room-code">----</span>
+          <button id="copyCodeBtn" class="ghost btn-sm">コピー</button>
+          <button id="shareCodeBtn" class="ghost btn-sm hidden">共有</button>
+          <span id="copyNote" class="muted hidden">コピーしました</span>
+        </div>
         <div>定員: <span id="roomCapacity">-</span></div>
       </div>
 
@@ -406,15 +436,15 @@
     <div class="modal-card">
       <div class="ab-head">
         <div>
-          <b>AI改善にご協力を🙏（A/B評価）</b>
-          <div class="muted">良いと思った方を選んでください（同点ボタンあり／対戦結果には影響しません）</div>
+          <b>どっちの回答がおもしろい？</b>
+          <div class="muted" id="abSubText">AIの採点をよくするために使います（対戦結果には影響しません）</div>
         </div>
-        <button id="abCloseBtn" class="ghost" title="評価をやめる">スキップ</button>
+        <button id="abCloseBtn" class="ghost btn-sm" title="評価をやめる">スキップ</button>
       </div>
 
       <div id="abContext">
-        <div id="abModePill" class="pill" style="margin-top:8px;">テキストお題</div>
-        <div id="abStep" class="ab-step muted" style="margin-left:8px;">1 / 3</div>
+        <div id="abModePill" class="pill hidden" style="margin-top:8px;">テキストお題</div>
+        <div id="abStep" class="ab-step muted" style="margin-top:8px;"></div>
         <div id="abPromptWrap" class="ab-prompt hidden"></div>
         <!-- 画像はテキスト固定のため常にhidden（DOMは互換のため残す） -->
         <img id="abImage" class="ab-img hidden" alt="" />
