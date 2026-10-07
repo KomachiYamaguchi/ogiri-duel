@@ -47,11 +47,8 @@ const roomCard = $("roomCard");
 const gameCard = $("gameCard");
 
 const nameInput = $("nameInput");
-const capacitySelect = $("capacitySelect");
 
 const joinQueueBtn = $("joinQueueBtn");
-const cancelQueueBtn = $("cancelQueueBtn");
-const queueStatus = $("queueStatus");
 
 const createRoomBtn = $("createRoomBtn");
 const joinRoomBtn = $("joinRoomBtn");
@@ -299,7 +296,6 @@ socket.on("topic_submit_ok", () => {
 
 /* ---------- クイック ---------- */
 joinQueueBtn?.addEventListener("click", () => { if (syncName()) send("join_queue", {}); }, { passive: true });
-cancelQueueBtn?.addEventListener("click", () => send("cancel_queue"), { passive: true });
 
 /* 待機中は大きな表示（回る印・経過時間・キャンセルだけ）に切り替える */
 const waitingCard = $("waitingCard");
@@ -318,12 +314,10 @@ function showWaiting(on) {
 }
 $("waitCancelBtn")?.addEventListener("click", () => send("cancel_queue"), { passive: true });
 socket.on("queue_joined", () => {
-  queueStatus && (queueStatus.textContent = "待機中：2人マッチ");
   show(lobbyNotice, false);
   showWaiting(true);
 });
 socket.on("queue_canceled", () => {
-  queueStatus && (queueStatus.textContent = "待機していません");
   showWaiting(false);
   show(lobbySec, true);
 });
@@ -337,7 +331,7 @@ socket.on("game_starting", ({ seconds, quick, room }) => {
   show(lobbySec, false);
   show(roomCard, false);
   show(resultCard, false);
-  $("startTitle").textContent = quick ? "相手が見つかりました！" : "メンバーがそろいました！";
+  $("startTitle").textContent = quick ? "相手が見つかりました！" : "試合を始めます！";
   let n = Math.max(1, Math.round(seconds || 3));
   const countEl = $("startCount");
   countEl.textContent = String(n);
@@ -348,8 +342,8 @@ socket.on("game_starting", ({ seconds, quick, room }) => {
 
 /* ---------- ルーム ---------- */
 createRoomBtn?.addEventListener("click", () => {
-  const cap = parseInt(capacitySelect?.value || "2", 10);
-  if (syncName()) send("create_room", { capacity: cap });
+  // 人数は選ばない（最大5人）。作った人がホストになり、「開始」で始める
+  if (syncName()) send("create_room", {});
 }, { passive: true });
 joinRoomBtn?.addEventListener("click", () => {
   const code = (roomCodeInput?.value || "").toUpperCase();
@@ -366,7 +360,6 @@ againBtn?.addEventListener("click", () => {
   // join_queue はサーバー側で今の部屋から抜けてから待ち行列に入る
   if (!syncName() || !send("join_queue", {})) return;
   leaveToLobby();
-  queueStatus && (queueStatus.textContent = "待機中：2人マッチ");
 }, { passive: true });
 toLobbyBtn?.addEventListener("click", () => { if (send("leave_room")) leaveToLobby(); }, { passive: true });
 
@@ -375,7 +368,7 @@ socket.on("player_left", ({ name }) => {
   const msg = `${name || "匿名"}さんが退出しました`;
   if (!resultCard.classList.contains("hidden")) { resultNote.textContent = msg; show(resultNote, true); }
   else if (!gameCard.classList.contains("hidden")) { gameNotice.textContent = msg; show(gameNotice, true); }
-  else if (roomMessage) { roomMessage.textContent = msg; }
+  else if (roomNote) { roomNote.textContent = msg; show(roomNote, true); }  // ルームの画面（待機中）
 });
 
 /* ルームコードのコピー・共有（共有はスマホなど、ブラウザが対応しているときだけ出す） */
@@ -414,7 +407,28 @@ socket.on("room_created", (room) => enterRoom(room));
 socket.on("room_joined", (room) => enterRoom(room));
 socket.on("room_update", (room) => { if (currentRoom && currentRoom.code === room.code) decorateRoom(room); });
 socket.on("room_closed", ({ code }) => { if (currentRoom && currentRoom.code === code) { alert("ルームが閉じられました。"); leaveToLobby(); }});
-socket.on("join_error", ({ message }) => alert(message || "参加に失敗しました。"));
+/* 参加できなかったとき（満員・開始済み・コード違い）は、入力欄の下に出す */
+const joinError = $("joinError");
+socket.on("join_error", ({ message }) => {
+  if (joinError) { joinError.textContent = message || "参加できませんでした。"; show(joinError, true); }
+});
+roomCodeInput?.addEventListener("input", () => show(joinError, false), { passive: true });
+
+/* ホストの「開始」。押したら、サーバーから返事（カウントダウンかエラー）が来るまで押せなくする */
+const startRoomBtn = $("startRoomBtn");
+const roomNote = $("roomNote");
+startRoomBtn?.addEventListener("click", () => { if (send("start_room")) startRoomBtn.disabled = true; }, { passive: true });
+socket.on("start_error", ({ message }) => {
+  if (startRoomBtn) startRoomBtn.disabled = false;
+  if (roomNote) { roomNote.textContent = message || "開始できませんでした。"; show(roomNote, true); }
+});
+/* カウントダウン中に抜けて2人未満になったときは、ルームの画面に戻す */
+socket.on("start_canceled", ({ message, room }) => {
+  if (startTimer) { clearInterval(startTimer); startTimer = null; }
+  show(startCard, false);
+  if (room) enterRoom(room);
+  if (roomNote) { roomNote.textContent = message || ""; show(roomNote, !!message); }
+});
 
 /* ---------- マッチ ---------- */
 socket.on("matched", (room) => { showWaiting(false); enterRoom(room); });
@@ -662,6 +676,8 @@ function _renderBoard(board, target) {
 /* ---------- 画面状態 ---------- */
 function enterRoom(room) {
   currentRoom = room;
+  show(joinError, false);
+  show(roomNote, false);
   decorateRoom(room);
   show(lobbySec, false);
   show(lobbyNotice, false);
@@ -672,7 +688,9 @@ function enterRoom(room) {
 }
 function decorateRoom(room) {
   roomCodeSpan && (roomCodeSpan.textContent = room.code);
-  roomCapacitySpan && (roomCapacitySpan.textContent = room.capacity);
+  const n = (room.members || []).length;
+  const isHost = !!room.host_sid && room.host_sid === mySid;
+  roomCapacitySpan && (roomCapacitySpan.textContent = `${n} / ${room.capacity}`);
   setMatchState(room.status);
 
   if (memberList) {
@@ -680,15 +698,24 @@ function decorateRoom(room) {
     (room.members || []).forEach((m) => {
       const row = document.createElement("div");
       row.className = "member";
-      row.innerHTML = `<div>${escapeHtml(m.name)}${m.sid === mySid ? "（あなた）" : ""}</div>`;
+      const hostTag = m.sid === room.host_sid ? `<span class="pill">ホスト</span>` : "";
+      row.innerHTML = `<div>${escapeHtml(m.name)}${m.sid === mySid ? "（あなた）" : ""}</div>${hostTag}`;
       memberList.appendChild(row);
     });
   }
   if (roomMessage) {
-    if (room.status === "waiting") roomMessage.textContent = "定員がそろうと自動で開始します。";
+    const minN = room.min_players || 2;
+    if (room.status === "waiting") roomMessage.textContent = isHost
+      ? (n >= minN ? "そろったら「開始」を押してください。" : `${minN}人以上そろうと開始できます。コードを送って招待してください。`)
+      : `ホストの開始を待っています（${n}人）`;
     else if (room.status === "playing") roomMessage.textContent = "";
     else if (room.status === "overtime") roomMessage.textContent = "サドンデス中：次の一本で決着";
     else if (room.status === "ended") roomMessage.textContent = "試合は終了しました。";
+  }
+  // 「開始」はホストにだけ出す。1人のときは押せない
+  if (startRoomBtn) {
+    show(startRoomBtn, isHost && room.status === "waiting");
+    startRoomBtn.disabled = n < (room.min_players || 2);
   }
 }
 function leaveToLobby() {
@@ -707,7 +734,6 @@ function leaveToLobby() {
   if (startTimer) { clearInterval(startTimer); startTimer = null; }
   show(startCard, false);
   pendingAnswer = null;
-  queueStatus && (queueStatus.textContent = "待機していません");
   show(lobbySec, true);
 }
 

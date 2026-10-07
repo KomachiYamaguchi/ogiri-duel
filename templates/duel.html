@@ -141,7 +141,7 @@
       .hdr-right{ gap:8px; }
       .container{ padding: 0 12px; }
       .primary, .ghost, button{ width: 100%; }
-      #roomCodeInput, #capacitySelect{ flex:1; }
+      #roomCodeInput{ flex:1; }
     }
 
     /* ====== Lobby Tabs ====== */
@@ -164,7 +164,7 @@
 
     /* ====== Room / Members ====== */
     .member{
-      display:flex; align-items:center; justify-content:space-between;
+      display:flex; align-items:center; justify-content:space-between; gap:8px;
       background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px;
     }
     .room-code{ font-variant-numeric: tabular-nums; font-size:22px; letter-spacing:2px; }
@@ -315,28 +315,16 @@
       <div style="margin-top:10px;">
         <div id="quickPanel" class="subcard" role="tabpanel">
           <button id="joinQueueBtn" class="primary" style="width:100%;">クイックマッチ開始</button>
-          <div class="lobby-line" style="margin-top:8px;">
-            <span id="queueStatus" class="pill status-wait">待機していません</span>
-            <span class="grow"></span>
-            <button id="cancelQueueBtn" class="ghost btn-sm">取り消し</button>
-          </div>
         </div>
 
         <div id="roomCodePanel" class="subcard hidden" role="tabpanel">
-          <div class="lobby-line">
-            <select id="capacitySelect" style="flex:0 0 auto;">
-              <option value="2" selected>2人対戦</option>
-              <option value="3">3人対戦</option>
-              <option value="4">4人対戦</option>
-              <option value="5">5人対戦</option>
-            </select>
-            <button id="createRoomBtn" class="primary grow">ルーム作成</button>
-          </div>
+          <button id="createRoomBtn" class="primary" style="width:100%;">ルーム作成</button>
           <div class="lobby-line" style="margin-top:8px;">
             <input id="roomCodeInput" type="text" placeholder="招待コード（ABCD）" style="text-transform:uppercase;" />
             <button id="joinRoomBtn" class="ghost">参加</button>
           </div>
-          <p class="muted" style="margin:8px 0 0;">ルームを作ってコードを送るか、もらったコードで参加。</p>
+          <div id="joinError" class="error-text hidden"></div>
+          <p class="muted" style="margin:8px 0 0;">ルームを作ってコードを送るか、もらったコードで参加（最大5人）。</p>
         </div>
       </div>
 
@@ -388,11 +376,14 @@
           <button id="shareCodeBtn" class="ghost btn-sm hidden">共有</button>
           <span id="copyNote" class="muted hidden">コピーしました</span>
         </div>
-        <div>定員: <span id="roomCapacity">-</span></div>
+        <div>人数: <span id="roomCapacity">-</span></div>
       </div>
 
       <div class="list" id="memberList" style="margin-top:12px;"></div>
-      <div class="row" style="margin-top:12px;"><span id="roomMessage" class="muted"></span></div>
+      <!-- 開始はホストだけ（2人以上で押せる）。ホスト以外には待っている旨を出す -->
+      <button id="startRoomBtn" class="primary hidden" style="margin-top:12px; width:100%;">開始</button>
+      <div class="row" style="margin-top:8px;"><span id="roomMessage" class="muted"></span></div>
+      <div id="roomNote" class="muted hidden" style="margin-top:4px;"></div>
     </section>
 
     <!-- ====== ゲーム ====== -->

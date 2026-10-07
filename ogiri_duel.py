@@ -33,6 +33,9 @@ DUP_MAX        = float(os.environ.get("OGIRI_DUP_MAX", "6.0"))
 SELF_DUP_BONUS = float(os.environ.get("OGIRI_SELF_DUP_BONUS", "1.0"))
 
 QUICK_CAPACITY = 2
+# ルームコードの部屋。定員は5人で、作った人（ホスト）が「開始」を押すと始まる（2人以上のとき）
+ROOM_CAPACITY = 5
+ROOM_MIN_PLAYERS = 2
 RATE_LIMIT_SECONDS = float(os.environ.get("OGIRI_RATE_LIMIT_SECONDS", "1.0"))
 # お題箱（遊ぶ人がロビーからお題を投稿する）。投稿は保存するだけで、自動では出題しない
 TOPIC_SUBMIT_MIN_LEN = 5
@@ -447,6 +450,7 @@ class Room:
         self.match_recorded = False              # 勝敗を記録済みか（二重記録の防止）
         self.devices: Dict[str, str] = {}        # sid → 端末の種類（試合開始時に決める）
         self.is_quick = False                    # クイックマッチの部屋か（開始時の表示の出し分け）
+        self.host_sid: Optional[str] = None      # ルームコードの部屋のホスト（「開始」を押せる人）。クイックマッチは None
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
         self.pending_scores: Set[str] = set()    # 受け付けたが採点が終わっていない回答のID
@@ -459,6 +463,8 @@ class Room:
         return {
             "code": self.code,
             "capacity": self.capacity,
+            "host_sid": self.host_sid,
+            "min_players": ROOM_MIN_PLAYERS,
             "members": [{"sid": m["sid"], "name": m["name"]} for m in self.members],
             "status": self.status,
             "round_no": self.round_no,
@@ -677,6 +683,9 @@ def cleanup_sid(sid: str):
     if not room: return
     left_name = next((m["name"] for m in room.members if m["sid"] == sid), sid_to_name.get(sid, "匿名"))
     room.members = [m for m in room.members if m["sid"] != sid]
+    # ホストが抜けたら、残っている人の中でいちばん先に入った人を新しいホストにする（members は入った順）
+    if room.host_sid == sid:
+        room.host_sid = room.members[0]["sid"] if room.members else None
     if room.members:
         # 残っている人に知らせる（試合の勝敗の扱いは変えない。表示のためだけ）
         socketio.emit("player_left", {"name": left_name,
@@ -762,7 +771,19 @@ def _start_after_countdown(room: Room):
     # カウントダウン中に全員が抜けた・部屋が閉じたときは始めない
     if room.status != "starting" or not room.members or rooms.get(room.code) is not room:
         return
+    if _cancel_start_if_too_few(room):
+        return
     _begin_battle(room)
+
+def _cancel_start_if_too_few(room: Room) -> bool:
+    """ルームコードの部屋で、開始までに抜けて2人未満になったら、始めずに待機に戻す（ホストがもう一度押せる）。"""
+    if room.is_quick or len(room.members) >= ROOM_MIN_PLAYERS:
+        return False
+    room.status = "waiting"
+    socketio.emit("start_canceled", {"message": f"{ROOM_MIN_PLAYERS}人未満になったので、開始を取りやめました。",
+                                     "room": room.to_public()}, room=room.code)
+    broadcast_room_update(room)
+    return True
 
 def _begin_battle(room: Room):
     # 先にお題を選ぶ（AI に作らせると数秒かかる）。その間は status="starting" のままにして、回答を受け付けない。
@@ -770,6 +791,8 @@ def _begin_battle(room: Room):
     choose_prompt_for(room)
     # お題を選んでいる間に全員が抜けた・部屋が閉じたときは始めない
     if room.status != "starting" or not room.members or rooms.get(room.code) is not room:
+        return
+    if _cancel_start_if_too_few(room):
         return
     room.status="playing"; room.round_no=1
     room.match_id = f"{room.code}-{uuid.uuid4().hex[:8]}"
@@ -1089,11 +1112,12 @@ def on_cancel_queue(_data=None):
 
 # ---- ルーム ----
 @socketio.on("create_room")
-def on_create_room(data):
-    cap = int((data or {}).get("capacity", 2)); cap = min(max(cap,2),5)
+def on_create_room(_data=None):
+    # 人数は選ばない（最大 ROOM_CAPACITY 人）。作った人がホスト
     name = sid_to_name.get(request.sid) or "匿名"; cleanup_sid(request.sid)
     code = generate_room_code()
-    room = Room(code, capacity=cap); rooms[code] = room
+    room = Room(code, capacity=ROOM_CAPACITY); rooms[code] = room
+    room.host_sid = request.sid
     join_room(code, sid=request.sid)
     room.members.append({"sid": request.sid, "name": _room_display_name(room, name), "joined_at": datetime.utcnow().isoformat()})
     sid_to_room[request.sid] = code
@@ -1105,16 +1129,27 @@ def on_join_room_code(data):
     code = ((data or {}).get("code") or "").upper(); room = rooms.get(code)
     if not room:
         emit("join_error", {"message": "そのコードのルームは存在しません。"}); return
-    if len(room.members) >= room.capacity or room.status != "waiting":
-        emit("join_error", {"message": "満員 or 開始済みです。"}); return
+    if room.status != "waiting":
+        emit("join_error", {"message": "このルームはもう始まっています。"}); return
+    if len(room.members) >= room.capacity:
+        emit("join_error", {"message": f"満員です（最大{room.capacity}人）。"}); return
     name = sid_to_name.get(request.sid) or "匿名"; cleanup_sid(request.sid)
     join_room(code, sid=request.sid)
     room.members.append({"sid": request.sid, "name": _room_display_name(room, name), "joined_at": datetime.utcnow().isoformat()})
     sid_to_room[request.sid] = code
     emit("room_joined", room.to_public(), to=request.sid)
-    broadcast_room_update(room)
-    if len(room.members) == room.capacity:
-        start_battle(room)
+    broadcast_room_update(room)  # そろっても自動では始めない。ホストが「開始」を押す
+
+@socketio.on("start_room")
+def on_start_room(_data=None):
+    room = rooms.get(sid_to_room.get(request.sid) or "")
+    if not room or room.host_sid != request.sid:
+        emit("start_error", {"message": "開始できるのはホストだけです。"}); return
+    if room.status != "waiting":
+        return  # もう始まっている（二度押しなど）
+    if len(room.members) < ROOM_MIN_PLAYERS:
+        emit("start_error", {"message": f"{ROOM_MIN_PLAYERS}人以上そろうと開始できます。"}); return
+    start_battle(room)
 
 @socketio.on("leave_room")
 def on_leave_room(_data=None):
