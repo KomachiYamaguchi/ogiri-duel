@@ -355,12 +355,32 @@ leaveRoomBtn?.addEventListener("click", leaveRoom, { passive: true });
 matchLeaveBtn?.addEventListener("click", leaveRoom, { passive: true });  // 試合中は上部バーの「退室」
 socket.on("left_room", () => leaveToLobby());
 
-/* 結果画面のボタン */
+/* 結果画面のボタン。ルームコードの試合は「もう1回（この部屋で）」、クイックマッチは「もう1回（クイックマッチ）」 */
+let resultIsRoom = false;  // 今の結果画面がルームコードの試合のものか
+function backToRoom() { send("room_again"); }
 againBtn?.addEventListener("click", () => {
+  if (resultIsRoom) { backToRoom(); return; }
   // join_queue はサーバー側で今の部屋から抜けてから待ち行列に入る
   if (!syncName() || !send("join_queue", {})) return;
   leaveToLobby();
 }, { passive: true });
+$("abAgainBtn")?.addEventListener("click", backToRoom, { passive: true });
+/* 同じ部屋の待機画面に戻る（AB評価の途中でも） */
+socket.on("room_rejoined", (room) => {
+  if (abStartTimer) { clearTimeout(abStartTimer); abStartTimer = null; }
+  closeAB();
+  show(matchBar, false);
+  show(resultCard, false);
+  enterRoom(room);
+});
+socket.on("again_error", ({ message }) => { resultNote.textContent = message || ""; show(resultNote, true); });
+/* 結果画面にいる間に、ホストが次の試合を始めた：この部屋からは外れる（AB評価は続けられる） */
+socket.on("room_moved_on", ({ message }) => {
+  currentRoom = null;
+  show(againBtn, false);
+  show($("abAgainBtn"), false);
+  resultNote.textContent = message || ""; show(resultNote, true);
+});
 toLobbyBtn?.addEventListener("click", () => { if (send("leave_room")) leaveToLobby(); }, { passive: true });
 
 /* ほかの人が抜けたとき（勝敗の扱いは変えない。表示だけ） */
@@ -446,7 +466,9 @@ socket.on("game_started", (room) => {
   setMatchState("playing");
   show(countdownPill, true);
   show(matchLeaveBtn, true);
-  renderMatchScore(Object.fromEntries((room.members || []).map((m) => [m.sid, { name: m.name, ippon: 0, points: 0 }])));
+  const zeroBoard = Object.fromEntries((room.members || []).map((m) => [m.sid, { name: m.name, ippon: 0, points: 0 }]));
+  renderMatchScore(zeroBoard);
+  renderBoard(zeroBoard, null);  // 同じ部屋で続けて遊ぶとき、前の試合の点数を残さない
   show(matchBar, true);
   window.scrollTo(0, 0);
 });
@@ -486,6 +508,9 @@ socket.on("match_over", ({ winner, board, summary }) => {
   if (submitAnswerBtn) submitAnswerBtn.disabled = true;  // 試合が終わったら送れない
   if (skipBtn) skipBtn.disabled = true;
   renderBoard(board, null);
+  resultIsRoom = !!currentRoom && !currentRoom.is_quick;
+  if (againBtn) { againBtn.textContent = resultIsRoom ? "もう1回（この部屋で）" : "もう1回（クイックマッチ）"; show(againBtn, true); }
+  show($("abAgainBtn"), resultIsRoom);
   showResult(winner, board, summary);
   // 結果を見てもらってから、AB評価を自動で始める（スキップできる）
   if (abStartTimer) clearTimeout(abStartTimer);
@@ -690,8 +715,13 @@ function decorateRoom(room) {
   roomCodeSpan && (roomCodeSpan.textContent = room.code);
   const n = (room.members || []).length;
   const isHost = !!room.host_sid && room.host_sid === mySid;
+  // 試合のあと、まだ結果画面にいる人は「結果画面」と出し、開始の人数に数えない（開始するとこの部屋から外れる）
+  const ready = (room.members || []).filter((m) => !m.away).length;
+  const awayN = n - ready;
   roomCapacitySpan && (roomCapacitySpan.textContent = `${n} / ${room.capacity}`);
-  setMatchState(room.status);
+  // 結果画面にいる間は、上部バーの「終了」を変えない（ルームが待機中に戻っても）
+  if (resultCard.classList.contains("hidden")) setMatchState(room.status);
+  else roomStatusPill && (roomStatusPill.textContent = STATE_LABEL[room.status] || room.status);
 
   if (memberList) {
     memberList.innerHTML = "";
@@ -699,23 +729,28 @@ function decorateRoom(room) {
       const row = document.createElement("div");
       row.className = "member";
       const hostTag = m.sid === room.host_sid ? `<span class="pill">ホスト</span>` : "";
-      row.innerHTML = `<div>${escapeHtml(m.name)}${m.sid === mySid ? "（あなた）" : ""}</div>${hostTag}`;
+      const awayTag = m.away ? `<span class="muted">結果画面</span>` : "";
+      row.innerHTML = `<div>${escapeHtml(m.name)}${m.sid === mySid ? "（あなた）" : ""}</div><div class="row" style="gap:6px; flex-wrap:nowrap;">${awayTag}${hostTag}</div>`;
       memberList.appendChild(row);
     });
   }
   if (roomMessage) {
     const minN = room.min_players || 2;
+    const awayTxt = awayN > 0 ? `（結果画面の人${awayN}人は、開始するとこの部屋から外れます）` : "";
     if (room.status === "waiting") roomMessage.textContent = isHost
-      ? (n >= minN ? "そろったら「開始」を押してください。" : `${minN}人以上そろうと開始できます。コードを送って招待してください。`)
-      : `ホストの開始を待っています（${n}人）`;
+      ? (ready >= minN ? `そろったら「開始」を押してください。${awayTxt}`
+        : awayN > 0 ? `${minN}人以上そろうと開始できます。結果画面の人が戻るのを待っています（${awayN}人）。`
+        : `${minN}人以上そろうと開始できます。コードを送って招待してください。`)
+      : `ホストの開始を待っています（${ready}人）`;
     else if (room.status === "playing") roomMessage.textContent = "";
     else if (room.status === "overtime") roomMessage.textContent = "サドンデス中：次の一本で決着";
     else if (room.status === "ended") roomMessage.textContent = "試合は終了しました。";
   }
   // 「開始」はホストにだけ出す。1人のときは押せない
   if (startRoomBtn) {
-    show(startRoomBtn, isHost && room.status === "waiting");
-    startRoomBtn.disabled = n < (room.min_players || 2);
+    const meAway = (room.members || []).some((m) => m.sid === mySid && m.away);
+    show(startRoomBtn, isHost && !meAway && room.status === "waiting");
+    startRoomBtn.disabled = ready < (room.min_players || 2);
   }
 }
 function leaveToLobby() {

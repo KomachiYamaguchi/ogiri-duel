@@ -451,6 +451,7 @@ class Room:
         self.devices: Dict[str, str] = {}        # sid → 端末の種類（試合開始時に決める）
         self.is_quick = False                    # クイックマッチの部屋か（開始時の表示の出し分け）
         self.host_sid: Optional[str] = None      # ルームコードの部屋のホスト（「開始」を押せる人）。クイックマッチは None
+        self.away: Set[str] = set()              # ルームコードの部屋で、試合のあとまだ結果画面にいる人（「もう1回」で待機画面に戻ると外れる）
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
         self.pending_scores: Set[str] = set()    # 受け付けたが採点が終わっていない回答のID
@@ -465,7 +466,8 @@ class Room:
             "capacity": self.capacity,
             "host_sid": self.host_sid,
             "min_players": ROOM_MIN_PLAYERS,
-            "members": [{"sid": m["sid"], "name": m["name"]} for m in self.members],
+            "members": [{"sid": m["sid"], "name": m["name"], "away": m["sid"] in self.away} for m in self.members],
+            "is_quick": self.is_quick,
             "status": self.status,
             "round_no": self.round_no,
             "mode": self.round_mode,
@@ -668,11 +670,13 @@ def generate_room_code(n=4) -> str:
 def broadcast_room_update(room: Room):
     socketio.emit("room_update", room.to_public(), room=room.code)
 
-def cleanup_sid(sid: str):
+def cleanup_sid(sid: str, keep_ab: bool = False):
+    """部屋・待ち行列から外す。keep_ab=True なら、途中のAB評価は続けられるように残す。"""
     global quick_queue
     quick_queue = [x for x in quick_queue if x["sid"] != sid]
     code = sid_to_room.get(sid)
-    ab_sessions.pop(sid, None)
+    if not keep_ab:
+        ab_sessions.pop(sid, None)
     if not code: return
     room = rooms.get(code); sid_to_room.pop(sid, None)
     # Socket.IO の部屋からも外す（外さないと、抜けたあとも元の部屋の通知が届き続ける）
@@ -683,6 +687,7 @@ def cleanup_sid(sid: str):
     if not room: return
     left_name = next((m["name"] for m in room.members if m["sid"] == sid), sid_to_name.get(sid, "匿名"))
     room.members = [m for m in room.members if m["sid"] != sid]
+    room.away.discard(sid)
     # ホストが抜けたら、残っている人の中でいちばん先に入った人を新しいホストにする（members は入った順）
     if room.host_sid == sid:
         room.host_sid = room.members[0]["sid"] if room.members else None
@@ -795,6 +800,7 @@ def _begin_battle(room: Room):
     if _cancel_start_if_too_few(room):
         return
     room.status="playing"; room.round_no=1
+    room.away = set()
     room.match_id = f"{room.code}-{uuid.uuid4().hex[:8]}"
     room.match_started_at = _utcnow_iso()
     room.went_overtime = False
@@ -901,6 +907,8 @@ def _end_match(room: Room, reason: str):
     """試合を終える。勝者を決めて match_over を送り、そのときのスコアボードで勝敗を記録する。"""
     winner_sid = _sole_leader(room)
     room.status = "ended"
+    if not room.is_quick:
+        room.away = {m["sid"] for m in room.members}  # 「もう1回」を押すまでは結果画面にいる
     w = room.board.get(winner_sid) if winner_sid else None
     result = "win" if w else "draw"
     socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board,
@@ -967,6 +975,10 @@ def _game_loop(room: "Room"):
         # 全員退出（closed）のときは cleanup_sid 側で保存する
         if room.status == "ended" and room.current_segment:
             _close_and_log_segment(room)
+        # ルームコードの部屋は閉じずに待機中に戻す（同じコードで、もう1回遊べる・新しい人も参加できる）
+        if room.status == "ended" and not room.is_quick and rooms.get(room.code) is room:
+            room.status = "waiting"
+            broadcast_room_update(room)
 
 # ---- お題変更（セグメント切替を含む） ----
 def change_prompt_same_mode(room: Room):
@@ -1146,10 +1158,29 @@ def on_start_room(_data=None):
     if not room or room.host_sid != request.sid:
         emit("start_error", {"message": "開始できるのはホストだけです。"}); return
     if room.status != "waiting":
-        return  # もう始まっている（二度押しなど）
-    if len(room.members) < ROOM_MIN_PLAYERS:
+        return  # もう始まっている（二度押しなど）・前の試合の片付け中
+    if request.sid in room.away:
+        emit("start_error", {"message": "「もう1回（この部屋で）」で待機画面に戻ってから開始してください。"}); return
+    ready =[m for m in room.members if m["sid"] not in room.away]
+    if len(ready) < ROOM_MIN_PLAYERS:
         emit("start_error", {"message": f"{ROOM_MIN_PLAYERS}人以上そろうと開始できます。"}); return
+    # まだ結果画面にいる人（「もう1回」を押していない人）は、この部屋から外れる。AB評価は続けられる
+    for sid in list(room.away):
+        cleanup_sid(sid, keep_ab=True)
+        socketio.emit("room_moved_on", {"message": "この部屋では次の試合が始まりました。"}, to=sid)
+    room.away = set()
     start_battle(room)
+
+@socketio.on("room_again")
+def on_room_again(_data=None):
+    """ルームコードの試合のあと「もう1回（この部屋で）」：結果画面から、同じ部屋の待機画面に戻る。"""
+    room = rooms.get(sid_to_room.get(request.sid) or "")
+    if not room or room.is_quick or room.status not in ("waiting", "ended"):
+        emit("again_error", {"message": "この部屋はもう次の試合を始めたか、閉じています。「ロビーへ」で戻ってください。"}); return
+    ab_sessions.pop(request.sid, None)  # 途中のAB評価はやめる
+    room.away.discard(request.sid)
+    emit("room_rejoined", room.to_public())
+    broadcast_room_update(room)
 
 @socketio.on("leave_room")
 def on_leave_room(_data=None):
@@ -1182,7 +1213,9 @@ def on_submit_answer(data):
     # ラウンド全体の回答（重複ペナルティ／ボード用）
     sid, name = request.sid, _member_name(room, request.sid)  # 部屋の中での表示名（匿名1 など）
     arr = room.answers.setdefault(sid, [])
-    ans_id = f"{sid}:{len(arr)+1}"
+    # 回答IDには試合IDの一部を入れる（同じ部屋で次の試合をしたとき、前の試合の遅れた採点と取り違えないように）
+    ans_id = f"{sid}:{(room.match_id or '')[-8:]}:{len(arr)+1}"
+    match_id_at_submit = room.match_id
     rec = {"text": text, "ts": now, "seq": len(arr)+1, "id": ans_id, "sid": sid, "name": name}
     arr.append(rec)
 
@@ -1201,7 +1234,9 @@ def on_submit_answer(data):
             dup = dup_penalty_for(room_obj, rec_obj)
             final_score = max(0.0, base["score_raw"] - dup["penalty"])
             # 勝敗に入れるか：時間切れ後の採点待ちに間に合わなかった回答と、試合が終わったあとに返ってきた採点は入れない
-            counted = (rec_obj["id"] not in room_obj.uncounted_scores) and room_obj.status not in ("ended", "closed")
+            # （同じ部屋で次の試合が始まっていたら、前の試合の回答は入れない）
+            counted = ((rec_obj["id"] not in room_obj.uncounted_scores) and room_obj.match_id == match_id_at_submit
+                       and room_obj.status in ("playing", "overtime", "judging"))
             # ここから採点待ちの集合から外すまでは、途中で他の処理に切り替わらない（通信をしない）ようにして、
             # 「スコアボードに足した」と「採点待ちが終わった」がずれないようにする
             if seg_obj is not None:
@@ -1260,7 +1295,9 @@ def on_ab_request(_payload=None):
     room = rooms.get(code)
     if not room: emit("ab_error", {"message": "ルームが存在しません。"}); return
     # 試合の途中（本戦・延長戦）では受け付けない。延長戦の回答も含めて、試合が終わった時点の回答でペアを作るため
-    if room.status != "ended":
+    # ルームコードの部屋は試合のあと待機中に戻るので、次の試合が始まるまでは前の試合の評価を受け付ける
+    finished = room.status == "ended" or (room.status == "waiting" and room.match_recorded and not room.is_quick)
+    if not finished:
         emit("ab_error", {"message": "試合が終わってから評価できます。"}); return
 
     chosen = _balanced_lr_pairs(_choose_ab_pairs(room, sid, AB_PAIRS_PER_USER), AB_PAIRS_PER_USER)
