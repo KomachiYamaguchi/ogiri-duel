@@ -252,7 +252,19 @@ socket.on("config", (cfg) => {
   show(promptImage, false);
   show(imgCredit, false);
   setThreshold(cfg?.threshold);
+  checkVersion(cfg?.version);
 });
+
+/* 開いているページが古い版のままか（デプロイの前から開きっぱなしだったとき）。
+   ロビーにいればすぐ読み込み直す。部屋や試合の途中なら知らせだけ出し、ロビーに戻ったときに読み込み直す */
+let staleVersion = false;
+function checkVersion(serverVersion) {
+  if (!serverVersion || !window.APP_VERSION || serverVersion === window.APP_VERSION) return;
+  staleVersion = true;
+  const idle = !currentRoom && !matchActive && !lobbySec.classList.contains("hidden") && waitingCard.classList.contains("hidden");
+  if (idle) location.reload();
+  else show($("updateBanner"), true);
+}
 
 /* ---------- お題箱（ロビーでお題を投稿。保存するだけで、自動では出題しない） ---------- */
 const topicBoxToggle = $("topicBoxToggle");
@@ -360,6 +372,7 @@ let resultIsRoom = false;  // 今の結果画面がルームコードの試合�
 function backToRoom() { send("room_again"); }
 againBtn?.addEventListener("click", () => {
   if (resultIsRoom) { backToRoom(); return; }
+  if (staleVersion) { location.reload(); return; }  // 古い版のまま次の試合に入らない
   // join_queue はサーバー側で今の部屋から抜けてから待ち行列に入る
   if (!syncName() || !send("join_queue", {})) return;
   leaveToLobby();
@@ -498,7 +511,7 @@ socket.on("judging_started", () => {
   if (skipBtn) skipBtn.disabled = true;
 });
 
-socket.on("match_over", ({ winner, board, summary }) => {
+socket.on("match_over", ({ winner, board, summary, room_match }) => {
   matchActive = false;
   stopCountdown();
   setMatchState("ended");
@@ -508,7 +521,8 @@ socket.on("match_over", ({ winner, board, summary }) => {
   if (submitAnswerBtn) submitAnswerBtn.disabled = true;  // 試合が終わったら送れない
   if (skipBtn) skipBtn.disabled = true;
   renderBoard(board, null);
-  resultIsRoom = !!currentRoom && !currentRoom.is_quick;
+  // ルームコードの試合かは、サーバーが送る room_match で決める（ブラウザ側の状態に頼らない）
+  resultIsRoom = typeof room_match === "boolean" ? room_match : (!!currentRoom && !currentRoom.is_quick);
   if (againBtn) { againBtn.textContent = resultIsRoom ? "もう1回（この部屋で）" : "もう1回（クイックマッチ）"; show(againBtn, true); }
   show($("abAgainBtn"), resultIsRoom);
   showResult(winner, board, summary);
@@ -770,6 +784,7 @@ function leaveToLobby() {
   show(startCard, false);
   pendingAnswer = null;
   show(lobbySec, true);
+  if (staleVersion) location.reload();  // 古い版のページは、ロビーに戻ったところで読み込み直す
 }
 
 /* ---------- カウントダウン ---------- */

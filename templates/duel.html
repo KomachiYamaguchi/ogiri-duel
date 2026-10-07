@@ -268,6 +268,7 @@
 <body>
   <!-- 接続が切れている間だけ出す -->
   <div id="connBanner" class="conn-banner pill status-overtime hidden">再接続中…</div>
+  <div id="updateBanner" class="conn-banner pill status-wait hidden">新しい版があります。ロビーに戻ると読み込み直します</div>
 
   <!-- ====== Header ====== -->
   <header>
@@ -503,7 +504,9 @@
   <!-- 既存JS読み込み（変更なし） -->
   <script type="module" src="/static/js/score_animation.js"></script>
   <script type="module">
-    function boot(){ import("/static/js/main.js"); }
+    // 画面の版（サーバーが起動したときのファイルの中身から作る）。古い版のページかどうかを main.js で見比べる
+    window.APP_VERSION = "{{ app_version }}";
+    function boot(){ import("/static/js/main.js?v={{ app_version }}"); }
     if (window.__SOCKETIO_READY__) { boot(); }
     else { const t=setInterval(()=>{ if(window.__SOCKETIO_READY__){ clearInterval(t); boot(); } }, 50); }
   </script>

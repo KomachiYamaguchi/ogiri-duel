@@ -912,6 +912,7 @@ def _end_match(room: Room, reason: str):
     w = room.board.get(winner_sid) if winner_sid else None
     result = "win" if w else "draw"
     socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board,
+                                 "room_match": not room.is_quick,  # ルームコードの試合か（結果画面のボタンの出し分け）
                                  "summary": _match_summary(room, result, winner_sid, reason)}, room=room.code)
     _record_match_result(room, result, winner_sid, reason)
 
@@ -1021,10 +1022,31 @@ def change_prompt_same_mode(room: Room):
     finally:
         room.skip_lock=False
 
+# ========= 画面の版 =========
+def _compute_app_version() -> str:
+    """画面のファイル（templates/ と static/）の中身から版を作る。デプロイで中身が変わると版も変わる。
+    開きっぱなしのページが古い版のまま動き続けないよう、接続のたびに config で知らせて見比べてもらう。"""
+    base = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha1()
+    for sub in ("templates", "static"):
+        for dirpath, dirnames, files in os.walk(os.path.join(base, sub)):
+            dirnames.sort()
+            for fn in sorted(files):
+                path = os.path.join(dirpath, fn)
+                h.update(os.path.relpath(path, base).replace("\\", "/").encode("utf-8"))
+                try:
+                    with open(path, "rb") as f:
+                        h.update(f.read())
+                except OSError:
+                    pass
+    return h.hexdigest()[:12]
+
+APP_VERSION = _compute_app_version()
+
 # ========= ルート =========
 @app.route("/")
 def index():
-    return render_template("duel.html")
+    return render_template("duel.html", app_version=APP_VERSION)
 
 @app.route("/api/health")
 def api_health():
@@ -1036,7 +1058,7 @@ def on_connect():
     emit("connected", {"sid": request.sid})
     emit("config", {"mode": OGIRI_MODE, "threshold": SCORE_THRESHOLD,
                     "allow_skip": ALLOW_SKIP, "skip_cooldown": SKIP_COOLDOWN,
-                    "topic_source": TOPIC_SOURCE})
+                    "topic_source": TOPIC_SOURCE, "version": APP_VERSION})
 
 @socketio.on("disconnect")
 def on_disconnect():
