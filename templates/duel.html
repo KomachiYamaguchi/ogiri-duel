@@ -205,22 +205,29 @@
     .score-bounce.theirs{ animation-name: score-bounce-soft; }
     @keyframes score-bounce{ 0%{transform:scale(1)} 35%{transform:translateY(-2px) scale(1.14)} 70%{transform:scale(.98)} 100%{transform:scale(1)} }
     @keyframes score-bounce-soft{ 0%{transform:scale(1)} 40%{transform:scale(1.05)} 100%{transform:scale(1)} }
-    /* 一本：画面の中央に「IPPON!」。輪は外側へ広がって消える（約1秒）。9点以上（.big）は少し長く・強く */
-    .ippon-fx{ position:fixed; inset:0; display:grid; place-items:center; pointer-events:none; z-index:1500; }
+    /* 一本：画面の中央に金色の「IPPON!」。輪は外側へ広がって消える（約1秒）。9点以上（.big）は少し長く・明るく・強く。
+       金は暗い背景の上で読みやすい明るさにし、文字の下に薄い影を付けて輪郭をはっきりさせる（ほかの画面の色は青のまま） */
+    .ippon-fx{
+      --gold:#ffd25e; --gold-glow:rgba(255,190,60,.75); --gold-ring:#f2b632;
+      position:fixed; inset:0; display:grid; place-items:center; pointer-events:none; z-index:1500;
+    }
+    .ippon-fx.big{ --gold:#ffe48f; --gold-glow:rgba(255,208,90,.95); --gold-ring:#ffcf3f; }
     .ippon-fx > *{ grid-area: 1 / 1; }
     .ippon-fx.theirs{ transform: scale(.65); opacity:.55; }  /* 相手の回答は小さく・薄く */
     .ippon-fx .fx-ring{
-      width:120px; height:120px; border-radius:50%; border:3px solid var(--accent); opacity:0;
+      width:120px; height:120px; border-radius:50%; border:3px solid var(--gold-ring); opacity:0;
+      box-shadow: 0 0 12px var(--gold-glow);
       animation: fx-ring 1000ms ease-out forwards;
     }
     .ippon-fx .fx-text{
-      font-weight:900; font-size:44px; letter-spacing:.06em; color: var(--txt);
-      text-shadow: 0 0 18px var(--accent), 0 0 4px var(--accent-2);
+      font-weight:900; font-size:44px; letter-spacing:.06em; color: var(--gold);
+      text-shadow: 0 2px 0 rgba(0,0,0,.55), 0 0 18px var(--gold-glow), 0 0 4px var(--gold-glow);
       animation: fx-text 1000ms ease-out forwards;
     }
     .ippon-fx.big .fx-ring{ border-width:4px; animation-duration:1400ms; }
     .ippon-fx.big .fx-ring.r2{ animation-delay:200ms; }
-    .ippon-fx.big .fx-text{ font-size:54px; animation-duration:1400ms; text-shadow: 0 0 26px var(--accent), 0 0 6px var(--accent-2); }
+    .ippon-fx.big .fx-ring{ box-shadow: 0 0 20px var(--gold-glow); }
+    .ippon-fx.big .fx-text{ font-size:54px; animation-duration:1400ms; text-shadow: 0 2px 0 rgba(0,0,0,.55), 0 0 28px var(--gold-glow), 0 0 8px var(--gold-glow); }
     @keyframes fx-ring{ 0%{transform:scale(.3); opacity:.9} 100%{transform:scale(3.2); opacity:0} }
     @keyframes fx-text{ 0%{transform:scale(.7); opacity:0} 20%{transform:scale(1.08); opacity:1} 35%{transform:scale(1)} 75%{opacity:1} 100%{transform:scale(1); opacity:0} }
     /* 端末の「動きを減らす」設定：輪は出さない。アニメーションは下の全体の指定で止まるので、
