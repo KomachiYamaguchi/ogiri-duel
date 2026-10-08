@@ -535,7 +535,8 @@ def _choose_ab_pairs(room: "Room", voter_sid: str, k: int) -> List[tuple]:
     """試合のすべてのお題からペアを最大 k 個選ぶ。ペアの2つの回答は必ず同じお題のもの。
     別々の人の回答どうしを優先し、足りないときだけ同じ人の回答どうしで埋める。
     どちらも、お題を順番に回して1つずつ取り、いろいろなお題から出るようにする。"""
-    by_seg = [_pair_candidates_from(seg, voter_sid) for seg in _ab_segments(room)]
+    # 候補のお題の回答はペアに使わない（ストックなどから出たお題の回答だけで作る）
+    by_seg = [_pair_candidates_from(seg, voter_sid) for seg in _ab_segments(room) if not _is_candidate_seg(seg)]
     out: List[tuple] = []
     for kind in (0, 1):  # 0: 別々の人どうし, 1: 同じ人どうし
         groups = [list(g[kind]) for g in by_seg if g[kind]]
@@ -605,7 +606,14 @@ def _segment_answer_row(a: dict) -> dict:
             # 勝敗に入ったか（時間切れ後の採点待ちに間に合わなかった回答は false）
             "counted": sc.get("counted")}
 
+def _is_candidate_seg(seg: Optional[dict]) -> bool:
+    """ルームのメンバーが出した候補のお題か。候補のお題はその場限り：お題も回答も保存せず、AB評価にも使わない
+    （ゴーストや学習にも使わない）。AI採点ありのときの採点は、その場の点数・一本・勝敗のために行う。"""
+    return bool(seg) and seg.get("prompt_source") == "candidate"
+
 def _write_segment(seg: dict):
+    if _is_candidate_seg(seg):
+        return  # 候補のお題は保存しない
     row = {
         "segment_id": seg["segment_id"],
         "game_id": seg["game_id"],
@@ -628,6 +636,8 @@ def _write_segment(seg: dict):
 def _write_segment_after_scoring(seg: dict):
     # 採点は回答のあと裏で行うので、全部の採点が終わるまで（最大 SEGMENT_SCORE_WAIT_SEC 秒）待ってから保存する
     deadline = time.time() + SEGMENT_SCORE_WAIT_SEC
+    if _is_candidate_seg(seg):
+        return  # 候補のお題は保存しないので、採点も待たない
     # AI採点なしの試合の回答は採点しないので待たない
     while seg.get("scoring_mode") != "none" and time.time() < deadline and any("score" not in a for a in seg.get("answers", [])):
         socketio.sleep(0.5)
@@ -1057,8 +1067,8 @@ def change_prompt_same_mode(room: Room):
             room.current_segment["ended_at"] = _utcnow_iso()
             # 統計（EWMA）更新：skip=true で1インクリメント
             _record_segment_topic_stats(room.current_segment, skipped=True)
-            # 旧互換ログ（skip）にも追記
-            _log_append(SKIP_LOG_PATH, {
+            # 旧互換ログ（skip）にも追記（候補のお題は保存しない）
+            if not _is_candidate_seg(room.current_segment): _log_append(SKIP_LOG_PATH, {
                 "ts": _utcnow_iso(),
                 "room": room.code,
                 "round_no": room.round_no,

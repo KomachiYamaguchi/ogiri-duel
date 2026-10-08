@@ -8,3 +8,4 @@
 - コミットするのは、今回の作業で変えたファイルだけにする。
 - ゲームのルールを変えたら docs/rules.md も更新する。
 - データベースの時刻はUTC(日本時間は+9時間)。
+- ルームのメンバーが出した候補のお題(prompt_source=candidate)は保存しない。ゴーストや学習にも使わない(segments・skip_log・topic_stats・AB評価に入れない)。
