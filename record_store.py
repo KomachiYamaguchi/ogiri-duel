@@ -105,6 +105,10 @@ SCHEMA_SQL = [
     # AI採点あり（ai）/なし（none）の試合か。既にある表にも足す。古い行は NULL のまま（すべて AI採点あり）
     "ALTER TABLE segments ADD COLUMN IF NOT EXISTS scoring_mode text",
     "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS scoring_mode text",
+    # お題の出どころ。segments は stock / ai / static / candidate（ルームのメンバーが出した候補）、
+    # match_results は試合のお題の出し方 stock / candidates。既にある表にも足す。古い行は NULL のまま
+    "ALTER TABLE segments ADD COLUMN IF NOT EXISTS prompt_source text",
+    "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS topic_mode text",
     # お題箱（遊ぶ人が投稿したお題）。自動では出題しない。tools/ のスクリプトで選別して、状態を 採用 / 不採用 にする
     """CREATE TABLE IF NOT EXISTS topic_submissions (
         id           bigserial PRIMARY KEY,
@@ -205,14 +209,15 @@ class RecordStore:
         def op(conn):
             conn.run(
                 """INSERT INTO segments (segment_id, game_id, prompt_id, prompt_text, genre, skip_count,
-                                         started_at, ended_at, answers, scoring_mode)
+                                         started_at, ended_at, answers, scoring_mode, prompt_source)
                    VALUES (:sid, :gid, :pid, :ptext, :genre, :skips,
-                           CAST(:started AS timestamptz), CAST(:ended AS timestamptz), CAST(:answers AS jsonb), :mode)
+                           CAST(:started AS timestamptz), CAST(:ended AS timestamptz), CAST(:answers AS jsonb), :mode, :psrc)
                    ON CONFLICT (segment_id) DO NOTHING""",
                 sid=row.get("segment_id"), gid=row.get("game_id"), pid=row.get("prompt_id"),
                 ptext=row.get("prompt_text"), genre=row.get("genre", ""), skips=int(row.get("skip_count") or 0),
                 started=row.get("started_at"), ended=row.get("ended_at"),
-                answers=json.dumps(row.get("answers") or [], ensure_ascii=False), mode=row.get("scoring_mode"))
+                answers=json.dumps(row.get("answers") or [], ensure_ascii=False), mode=row.get("scoring_mode"),
+                psrc=row.get("prompt_source"))
         self._submit("segments", op)
 
     def insert_ab_vote(self, row: Dict[str, Any]):
@@ -239,16 +244,19 @@ class RecordStore:
         def op(conn):
             conn.run(
                 """INSERT INTO match_results (match_id, room_code, result, is_draw, winner_sid, winner_name,
-                                              overtime, end_reason, players, devices, started_at, ended_at, scoring_mode)
+                                              overtime, end_reason, players, devices, started_at, ended_at, scoring_mode,
+                                              topic_mode)
                    VALUES (:mid, :code, :result, :draw, :wsid, :wname, :ot, :reason, CAST(:players AS jsonb),
-                           CAST(:devices AS jsonb), CAST(:started AS timestamptz), CAST(:ended AS timestamptz), :mode)
+                           CAST(:devices AS jsonb), CAST(:started AS timestamptz), CAST(:ended AS timestamptz), :mode,
+                           :tmode)
                    ON CONFLICT (match_id) DO NOTHING""",
                 mid=row.get("match_id"), code=row.get("room_code"), result=row.get("result"),
                 draw=bool(row.get("is_draw")), wsid=row.get("winner_sid"), wname=row.get("winner_name"),
                 ot=bool(row.get("overtime")), reason=row.get("end_reason"),
                 players=json.dumps(row.get("players") or [], ensure_ascii=False),
                 devices=json.dumps(row.get("devices") or [], ensure_ascii=False),
-                started=row.get("started_at"), ended=row.get("ended_at"), mode=row.get("scoring_mode"))
+                started=row.get("started_at"), ended=row.get("ended_at"), mode=row.get("scoring_mode"),
+                tmode=row.get("topic_mode"))
         self._submit("match_results", op)
 
     def insert_topic_submission(self, row: Dict[str, Any]):

@@ -36,6 +36,9 @@ QUICK_CAPACITY = 2
 # ルームコードの部屋。定員は5人で、作った人（ホスト）が「開始」を押すと始まる（2人以上のとき）
 ROOM_CAPACITY = 5
 ROOM_MIN_PLAYERS = 2
+# ルームコードの「お題の候補」。メンバーが出した候補から、ホストが最初のお題を選ぶ
+CANDIDATE_PER_MEMBER = 3
+CANDIDATE_MAX = 15
 RATE_LIMIT_SECONDS = float(os.environ.get("OGIRI_RATE_LIMIT_SECONDS", "1.0"))
 # お題箱（遊ぶ人がロビーからお題を投稿する）。投稿は保存するだけで、自動では出題しない
 TOPIC_SUBMIT_MIN_LEN = 5
@@ -453,6 +456,11 @@ class Room:
         self.host_sid: Optional[str] = None      # ルームコードの部屋のホスト（「開始」を押せる人）。クイックマッチは None
         self.scoring = True                      # ルームコードの部屋の「AI採点あり/なし」（ホストが待機中に切り替える）。クイックマッチは常にあり
         self.match_scoring = True                # 今の（最後の）試合が AI採点ありか（試合を始めたときに scoring から決める）
+        self.topic_mode = "stock"               # ルームコードの部屋のお題の出し方：stock（ストックから）/ candidates（候補から選ぶ）
+        self.match_topic_mode = "stock"          # 今の（最後の）試合のお題の出し方（試合を始めたときに topic_mode から決める）
+        self.candidates: List[dict] = []         # お題の候補 {id, text, sid, name}。使ったものは消し、残りは次の試合に持ち越す
+        self.selected_candidate: Optional[str] = None  # ホストが選んだ、最初のお題にする候補の id
+        self.used_candidate: Optional[dict] = None     # 最後にお題にした候補（開始を取りやめたときに戻すため）
         self.away: Set[str] = set()              # ルームコードの部屋で、試合のあとまだ結果画面にいる人（「もう1回」で待機画面に戻ると外れる）
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
@@ -471,6 +479,10 @@ class Room:
             "members": [{"sid": m["sid"], "name": m["name"], "away": m["sid"] in self.away} for m in self.members],
             "is_quick": self.is_quick,
             "scoring": self.scoring,
+            "topic_mode": self.topic_mode,
+            "candidates": [{"id": c["id"], "text": c["text"], "sid": c["sid"], "name": c["name"]} for c in self.candidates],
+            "selected_candidate": self.selected_candidate,
+            "candidate_limits": {"per_member": CANDIDATE_PER_MEMBER, "total": CANDIDATE_MAX},
             "status": self.status,
             "round_no": self.round_no,
             "mode": self.round_mode,
@@ -605,6 +617,7 @@ def _write_segment(seg: dict):
         "started_at": seg.get("started_at"),
         "ended_at": seg.get("ended_at"),
         "scoring_mode": seg.get("scoring_mode", "ai"),
+        "prompt_source": seg.get("prompt_source", ""),  # お題の出どころ：stock / ai / static / candidate（メンバーの候補）
     }
     if RECORD_STORE:
         RECORD_STORE.insert_segment(row)
@@ -643,6 +656,8 @@ def _record_segment_topic_stats(seg: Optional[dict], skipped: bool):
     """セグメントのお題を topic_stats に1回だけ記録する（スキップ成立時と、ラウンド終了時の両方から呼ぶ）。"""
     if not seg or seg.get("stats_recorded"): return
     seg["stats_recorded"] = True
+    if seg.get("prompt_source") == "candidate":
+        return  # メンバーが出した候補のお題は、スキップ率の統計に入れない
     _increment_topic_stats({"id": seg.get("prompt_id"), "text": seg.get("prompt_text",""),
                             "genre": seg.get("genre",""), "source": seg.get("prompt_source","")}, skipped=skipped)
 
@@ -737,8 +752,29 @@ def _tick_cooldown(room: Room):
         if rem <= 0 or room.status != "playing": break
         time.sleep(1)
 
-def choose_prompt_for(room: Room):
+def choose_prompt_for(room: Room, first: bool = False):
+    """次のお題を決める。「候補から選ぶ」の試合では、最初はホストが選んだ候補、お題チェンジでは残りの候補からランダム。
+    使った候補は一覧から消す。候補がなくなったら（「ストックから」の試合も）今までどおりストックなどから出す。"""
+    room.used_candidate = None
+    if room.match_topic_mode == "candidates" and room.candidates:
+        c = next((x for x in room.candidates if x["id"] == room.selected_candidate), None) if first else None
+        if c is None:
+            c = random.choice(room.candidates)
+        room.candidates.remove(c)
+        if room.selected_candidate == c["id"]:
+            room.selected_candidate = None
+        room.used_candidate = c
+        room.current_prompt = {"id": f"cand-{c['id']}", "text": c["text"], "genre": "候補", "source": "candidate"}
+        return
     room.current_prompt = pick_text_prompt()
+
+def _put_back_candidate(room: Room):
+    """試合を始めなかったとき、最初のお題にした候補を一覧に戻す（選んだ状態も戻す）。"""
+    c = room.used_candidate
+    if c and all(x["id"] != c["id"] for x in room.candidates):
+        room.candidates.insert(0, c)
+        room.selected_candidate = c["id"]
+    room.used_candidate = None
 
 def start_round(room: Room, duration_sec: Optional[int], pick_new_prompt: bool):
     if pick_new_prompt or room.current_prompt is None:
@@ -799,11 +835,15 @@ def _cancel_start_if_too_few(room: Room) -> bool:
 def _begin_battle(room: Room):
     # 先にお題を選ぶ（AI に作らせると数秒かかる）。その間は status="starting" のままにして、回答を受け付けない。
     # 以前は先に "playing" にしていたため、お題が出る前の回答が受け付けられ、お題が出ると一覧から消えるのに一本だけ残った
-    choose_prompt_for(room)
+    room.match_topic_mode = "stock" if room.is_quick else room.topic_mode  # この試合のお題の出し方（試合中は変わらない）
+    choose_prompt_for(room, first=True)
     # お題を選んでいる間に全員が抜けた・部屋が閉じたときは始めない
     if room.status != "starting" or not room.members or rooms.get(room.code) is not room:
+        _put_back_candidate(room)
         return
     if _cancel_start_if_too_few(room):
+        _put_back_candidate(room)
+        broadcast_room_update(room)
         return
     room.status="playing"; room.round_no=1
     room.away = set()
@@ -958,6 +998,7 @@ def _record_match_result(room: Room, result: str, winner_sid: Optional[str], rea
                     for sid, v in room.board.items()],
         "devices": [room.devices.get(sid, "unknown") for sid in room.board],  # 端末の種類（players と同じ並び）
         "scoring_mode": "ai" if room.match_scoring else "none",
+        "topic_mode": room.match_topic_mode,  # お題の出し方：stock（ストックから）/ candidates（候補から選ぶ）
         "started_at": room.match_started_at,
         "ended_at": _utcnow_iso(),
     }
@@ -1207,6 +1248,9 @@ def on_start_room(_data=None):
         return  # もう始まっている（二度押しなど）・前の試合の片付け中
     if request.sid in room.away:
         emit("start_error", {"message": "「もう1回（この部屋で）」で待機画面に戻ってから開始してください。"}); return
+    if room.topic_mode == "candidates" and room.candidates and \
+            not any(c["id"] == room.selected_candidate for c in room.candidates):
+        emit("start_error", {"message": "最初のお題にする候補を1つ選んでください。"}); return
     ready =[m for m in room.members if m["sid"] not in room.away]
     if len(ready) < ROOM_MIN_PLAYERS:
         emit("start_error", {"message": f"{ROOM_MIN_PLAYERS}人以上そろうと開始できます。"}); return
@@ -1225,6 +1269,69 @@ def on_set_scoring(data=None):
         return
     room.scoring = bool((data or {}).get("on", True))
     broadcast_room_update(room)
+
+# ---- お題の候補（ルームコード） ----
+def _waiting_room_of(sid: str) -> Optional[Room]:
+    room = rooms.get(sid_to_room.get(sid) or "")
+    if not room or room.is_quick or room.status != "waiting":
+        return None
+    return room
+
+@socketio.on("set_topic_mode")
+def on_set_topic_mode(data=None):
+    """ホストが「お題：ストックから/候補から選ぶ」を切り替える（待機中だけ）。候補は消さずに残す。"""
+    room = _waiting_room_of(request.sid)
+    if not room or room.host_sid != request.sid:
+        return
+    mode = (data or {}).get("mode")
+    if mode in ("stock", "candidates"):
+        room.topic_mode = mode
+        broadcast_room_update(room)
+
+@socketio.on("add_candidate")
+def on_add_candidate(data=None):
+    room = _waiting_room_of(request.sid)
+    if not room:
+        emit("candidate_error", {"message": "候補は、ルームの待機中に出せます。"}); return
+    if room.topic_mode != "candidates":
+        emit("candidate_error", {"message": "今は「ストックから」です。ホストが「候補から選ぶ」にすると出せます。"}); return
+    text = re.sub(r"\s+", " ", str((data or {}).get("text") or "")).strip()
+    if len(text) < TOPIC_SUBMIT_MIN_LEN:
+        emit("candidate_error", {"message": f"候補は{TOPIC_SUBMIT_MIN_LEN}文字以上で入力してください。"}); return
+    if len(text) > TOPIC_SUBMIT_MAX_LEN:
+        emit("candidate_error", {"message": f"候補は{TOPIC_SUBMIT_MAX_LEN}文字以内で入力してください（今は{len(text)}文字）。"}); return
+    if sum(1 for c in room.candidates if c["sid"] == request.sid) >= CANDIDATE_PER_MEMBER:
+        emit("candidate_error", {"message": f"候補は1人{CANDIDATE_PER_MEMBER}つまでです。"}); return
+    if len(room.candidates) >= CANDIDATE_MAX:
+        emit("candidate_error", {"message": f"候補は部屋全体で{CANDIDATE_MAX}個までです。"}); return
+    if any(_normalize_topic_text(c["text"]) == _normalize_topic_text(text) for c in room.candidates):
+        emit("candidate_error", {"message": "同じ候補がもうあります。"}); return
+    room.candidates.append({"id": uuid.uuid4().hex[:8], "text": text, "sid": request.sid, "name": _member_name(room, request.sid)})
+    emit("candidate_added", {})
+    broadcast_room_update(room)
+
+@socketio.on("remove_candidate")
+def on_remove_candidate(data=None):
+    """自分が出した候補を消す。"""
+    room = _waiting_room_of(request.sid)
+    if not room: return
+    cid = (data or {}).get("id")
+    c = next((x for x in room.candidates if x["id"] == cid and x["sid"] == request.sid), None)
+    if not c: return
+    room.candidates.remove(c)
+    if room.selected_candidate == cid:
+        room.selected_candidate = None
+    broadcast_room_update(room)
+
+@socketio.on("select_candidate")
+def on_select_candidate(data=None):
+    """ホストが、最初のお題にする候補を選ぶ。"""
+    room = _waiting_room_of(request.sid)
+    if not room or room.host_sid != request.sid: return
+    cid = (data or {}).get("id")
+    if any(x["id"] == cid for x in room.candidates):
+        room.selected_candidate = cid
+        broadcast_room_update(room)
 
 @socketio.on("room_again")
 def on_room_again(_data=None):

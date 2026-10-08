@@ -168,6 +168,14 @@
       background:#0e1320; border:1px solid #222b42; padding:10px 12px; border-radius:10px;
     }
     .room-code{ font-variant-numeric: tabular-nums; font-size:22px; letter-spacing:2px; }
+    #memberList .member{ padding:6px 12px; }  /* 待機画面を1画面に収めるため、少し低く */
+    #memberList.compact{ flex-direction:row; flex-wrap:wrap; gap:6px; }
+    #memberList.compact .member{ padding:4px 10px; gap:6px; font-size:13px; border-radius:999px; }
+    #memberList.compact .member .pill{ padding:2px 6px; font-size:11px; }
+    /* お題の候補の1行：お題・出した人・ボタンを横に並べる */
+    .cand-row{ display:flex; align-items:center; gap:8px; padding:6px 10px; }
+    .cand-row .cand-text{ flex:1; min-width:0; font-size:14px; line-height:1.4; word-break:break-word; }
+    .cand-row .cand-by{ font-size:11px; }
 
     /* ====== Game ====== */
     .prompt-img{
@@ -366,7 +374,7 @@
         <h2 class="section-title" style="margin:0;">ルーム</h2>
         <div class="row">
           <span id="roomStatusPill" class="pill status-wait">待機中</span>
-          <button id="leaveRoomBtn" class="ghost">退室</button>
+          <button id="leaveRoomBtn" class="ghost btn-sm">退室</button>
         </div>
       </div>
 
@@ -389,7 +397,26 @@
       </div>
       <div id="scoringNote" class="muted hidden" style="margin-top:4px;">点数・一本・勝敗なしで、回答を出し合います</div>
 
+      <!-- お題の出し方。ホストだけが切り替えられる。「候補から選ぶ」ではメンバー全員が候補を出せる -->
+      <div class="row" style="margin-top:8px; gap:8px; flex-wrap:nowrap;">
+        <span>お題:</span>
+        <button id="topicStockBtn" class="ghost btn-sm hidden">ストックから</button>
+        <button id="topicCandBtn" class="ghost btn-sm hidden">候補から選ぶ</button>
+        <span id="topicModeLabel" class="pill">ストックから</span>
+      </div>
+
       <div class="list" id="memberList" style="margin-top:12px;"></div>
+      <!-- 候補の一覧（折りたためる。広げても中でスクロールして、待機画面が1画面に収まるように） -->
+      <details id="candidateBox" class="subcard hidden" open style="margin-top:8px;">
+        <summary style="cursor:pointer;"><b>お題の候補</b> <span id="candidateCount" class="muted"></span></summary>
+        <div class="lobby-line" style="margin-top:8px;">
+          <input id="candidateInput" type="text" placeholder="候補を入力（5〜60文字）" />
+          <button id="candidateAddBtn" class="primary btn-sm">出す</button>
+        </div>
+        <div id="candidateError" class="error-text hidden"></div>
+        <div id="candidateList" class="list" style="margin-top:8px; max-height:150px; overflow-y:auto; gap:6px;"></div>
+        <div id="candidateHint" class="muted" style="margin-top:6px;"></div>
+      </details>
       <!-- 開始はホストだけ（2人以上で押せる）。ホスト以外には待っている旨を出す -->
       <button id="startRoomBtn" class="primary hidden" style="margin-top:12px; width:100%;">開始</button>
       <div class="row" style="margin-top:8px;"><span id="roomMessage" class="muted"></span></div>

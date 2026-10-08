@@ -378,6 +378,63 @@ againBtn?.addEventListener("click", () => {
   leaveToLobby();
 }, { passive: true });
 $("abAgainBtn")?.addEventListener("click", backToRoom, { passive: true });
+/* ---------- お題の候補（ルームコード） ---------- */
+const candidateInput = $("candidateInput");
+const candidateError = $("candidateError");
+function renderCandidates(room, isHost, candMode) {
+  const box = $("candidateBox");
+  show(box, candMode && room.status === "waiting");
+  if (!candMode) return;
+  const cands = room.candidates || [];
+  const lim = room.candidate_limits || { per_member: 3, total: 15 };
+  const mine = cands.filter((c) => c.sid === mySid).length;
+  $("candidateCount").textContent = `${cands.length} / ${lim.total}（あなた ${mine} / ${lim.per_member}）`;
+  const full = mine >= lim.per_member || cands.length >= lim.total;
+  candidateInput.disabled = full;
+  $("candidateAddBtn").disabled = full;
+  candidateInput.placeholder = full ? (cands.length >= lim.total ? "候補は部屋全体でいっぱいです" : "あなたの候補はいっぱいです") : "候補を入力（5〜60文字）";
+  const list = $("candidateList");
+  list.innerHTML = "";
+  for (const c of cands) {
+    const row = document.createElement("div");
+    const selected = c.id === room.selected_candidate;
+    row.className = "answer cand-row" + (selected ? " mine" : "");  // 選ばれた候補は枠の色で示す（今ある色を使う）
+    row.innerHTML = `<div class="cand-text">${escapeHtml(c.text)}<div class="muted cand-by">${c.sid === mySid ? "あなた" : escapeHtml(c.name)}${selected ? "・最初のお題" : ""}</div></div>
+      <span class="row" style="gap:6px; flex-wrap:nowrap;"></span>`;
+    const btns = row.querySelector(":scope > .row");
+    if (isHost && !selected) {
+      const b = document.createElement("button");
+      b.className = "ghost btn-sm"; b.textContent = "これにする";
+      b.addEventListener("click", () => send("select_candidate", { id: c.id }), { passive: true });
+      btns.appendChild(b);
+    }
+    if (c.sid === mySid) {
+      const b = document.createElement("button");
+      b.className = "ghost btn-sm"; b.textContent = "消す";
+      b.addEventListener("click", () => send("remove_candidate", { id: c.id }), { passive: true });
+      btns.appendChild(b);
+    }
+    list.appendChild(row);
+  }
+  $("candidateHint").textContent = cands.length
+    ? (isHost ? "「これにする」で最初のお題を選びます。お題チェンジでは残りの候補から出ます。" : "最初のお題はホストが選びます。お題チェンジでは残りの候補から出ます。")
+    : "まだ候補はありません。候補がないときは、ストックから出します。";
+}
+function addCandidate() {
+  const text = (candidateInput?.value || "").replace(/\s+/g, " ").trim();
+  const len = [...text].length;
+  const err = !text ? "候補を入力してください。" : len < 5 ? "候補は5文字以上で入力してください。" : len > 60 ? `候補は60文字以内で入力してください（今は${len}文字）。` : "";
+  if (err) { candidateError.textContent = err; show(candidateError, true); return; }
+  send("add_candidate", { text });
+}
+$("candidateAddBtn")?.addEventListener("click", addCandidate, { passive: true });
+candidateInput?.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) addCandidate(); });
+candidateInput?.addEventListener("input", () => show(candidateError, false), { passive: true });
+socket.on("candidate_added", () => { if (candidateInput) candidateInput.value = ""; show(candidateError, false); });
+socket.on("candidate_error", ({ message }) => { candidateError.textContent = message || "出せませんでした。"; show(candidateError, true); });
+$("topicStockBtn")?.addEventListener("click", () => send("set_topic_mode", { mode: "stock" }), { passive: true });
+$("topicCandBtn")?.addEventListener("click", () => send("set_topic_mode", { mode: "candidates" }), { passive: true });
+
 /* ホストが「AI採点あり/なし」を切り替える（待機中だけ） */
 $("scoringOnBtn")?.addEventListener("click", () => send("set_scoring", { on: true }), { passive: true });
 $("scoringOffBtn")?.addEventListener("click", () => send("set_scoring", { on: false }), { passive: true });
@@ -784,6 +841,8 @@ function decorateRoom(room) {
   else roomStatusPill && (roomStatusPill.textContent = STATE_LABEL[room.status] || room.status);
 
   if (memberList) {
+    // 「候補から選ぶ」のときは候補の欄が広いので、メンバーは小さな札で横に並べる（待機画面を1画面に収めるため）
+    memberList.classList.toggle("compact", room.topic_mode === "candidates" && room.status === "waiting");
     memberList.innerHTML = "";
     (room.members || []).forEach((m) => {
       const row = document.createElement("div");
@@ -814,11 +873,25 @@ function decorateRoom(room) {
   show($("scoringLabel"), !canSwitch);
   $("scoringLabel").textContent = scoringOn ? "あり" : "なし";
   show($("scoringNote"), !scoringOn);
+  // お題の出し方：ホストは切り替えボタン、ほかの人には今の設定だけ
+  const candMode = room.topic_mode === "candidates";
+  $("topicStockBtn").className = `${candMode ? "ghost" : "primary"} btn-sm${canSwitch ? "" : " hidden"}`;
+  $("topicCandBtn").className = `${candMode ? "primary" : "ghost"} btn-sm${canSwitch ? "" : " hidden"}`;
+  show($("topicModeLabel"), !canSwitch);
+  $("topicModeLabel").textContent = candMode ? "候補から選ぶ" : "ストックから";
+  renderCandidates(room, isHost, candMode);
+  const cands = room.candidates || [];
+  const needPick = candMode && cands.length > 0 && !cands.some((c) => c.id === room.selected_candidate);
+  // 「候補から選ぶ」で開始できる人数がそろっているときは、ホストに次にすることを出す
+  if (roomMessage && room.status === "waiting" && isHost && candMode && ready >= (room.min_players || 2)) {
+    if (!cands.length) roomMessage.textContent = "候補がないので、ストックから出して始めます。";
+    else if (needPick) roomMessage.textContent = "最初のお題にする候補を1つ選んでから「開始」を押してください。";
+  }
   // 「開始」はホストにだけ出す。1人のときは押せない
   if (startRoomBtn) {
     const meAway = (room.members || []).some((m) => m.sid === mySid && m.away);
     show(startRoomBtn, isHost && !meAway && room.status === "waiting");
-    startRoomBtn.disabled = ready < (room.min_players || 2);
+    startRoomBtn.disabled = ready < (room.min_players || 2) || needPick;  // 候補があるときは、1つ選んでから
   }
 }
 function leaveToLobby() {
