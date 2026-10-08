@@ -1,5 +1,5 @@
 /* global io */
-import { showScorePop } from "./score_animation.js";
+import { playScoreEffect } from "./score_animation.js";
 
 /* ---------- SE ---------- */
 const seToggle = document.getElementById("seToggle");
@@ -210,8 +210,8 @@ function renderScoreEvent({ id, score_raw, penalty, score, similar_to, comment, 
     meta.textContent = (pen > 0 ? `${base.toFixed(1)}点 - ${pen.toFixed(1)} ${simTxt} ⇒ ${fin.toFixed(1)}点` : `${fin.toFixed(1)}点`)
       + (fin >= th ? " ★IPPON!" : "");
   }
-  // アニメ（内部でtransform/opacityのみ使う）＋短命DOM
-  showScorePop(el, fin, th);
+  // 点数に応じた演出（5点未満はなし。自分の回答は強め、相手の回答は控えめ。AI採点なしの試合は採点が来ないので出ない）
+  if (matchScoring) playScoreEffect(meta, fin, th, { mine: el.classList.contains("mine") });
   if (fin >= th) {
     try { playDon(); } catch (_e) {}
   }

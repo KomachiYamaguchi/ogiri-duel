@@ -198,33 +198,35 @@
     body.offline main, body.offline .modal{ pointer-events:none; opacity:.55; }  /* つながるまで押せない */
     .error-text{ color: var(--danger); font-size:12px; margin-top:6px; }
 
-    /* ====== IPPON / Score Pop（既存JS用） ====== */
+    /* ====== 採点の演出（static/js/score_animation.js）。色はアクセント色だけ。画面の操作は妨げない ====== */
     .answer-item{ position: relative; overflow: visible; }
-    .ippon-burst{
-      position:absolute; inset:-8px -12px; display:grid; place-items:center; pointer-events:none; z-index:3;
-      font-weight:900; font-size: clamp(28px, 5.6vw, 56px); letter-spacing:.08em;
-      color:#ffe27a; -webkit-text-stroke: 2px #8a5a00;
-      text-shadow:0 2px 0 #000, 0 4px 12px rgba(0,0,0,.6);
-      filter: drop-shadow(0 8px 24px rgba(0,0,0,.45));
-      animation: ippon-pop 900ms cubic-bezier(.2,1,.2,1) forwards;
-      white-space:nowrap; user-select:none;
+    /* 5点〜一本ライン未満：点数の行が少し弾む（相手の回答は控えめ） */
+    .score-bounce{ transform-origin: left center; animation: score-bounce 420ms ease-out; }
+    .score-bounce.theirs{ animation-name: score-bounce-soft; }
+    @keyframes score-bounce{ 0%{transform:scale(1)} 35%{transform:translateY(-2px) scale(1.14)} 70%{transform:scale(.98)} 100%{transform:scale(1)} }
+    @keyframes score-bounce-soft{ 0%{transform:scale(1)} 40%{transform:scale(1.05)} 100%{transform:scale(1)} }
+    /* 一本：画面の中央に「IPPON!」。輪は外側へ広がって消える（約1秒）。9点以上（.big）は少し長く・強く */
+    .ippon-fx{ position:fixed; inset:0; display:grid; place-items:center; pointer-events:none; z-index:1500; }
+    .ippon-fx > *{ grid-area: 1 / 1; }
+    .ippon-fx.theirs{ transform: scale(.65); opacity:.55; }  /* 相手の回答は小さく・薄く */
+    .ippon-fx .fx-ring{
+      width:120px; height:120px; border-radius:50%; border:3px solid var(--accent); opacity:0;
+      animation: fx-ring 1000ms ease-out forwards;
     }
-    @keyframes ippon-pop{
-      0%{transform:scale(.4) rotate(-6deg);opacity:0}
-      18%{transform:scale(1.15) rotate(1.5deg);opacity:1}
-      32%{transform:scale(1.0) rotate(0deg)}
-      70%{opacity:1}
-      100%{transform:scale(.92) translateY(-6px);opacity:0}
+    .ippon-fx .fx-text{
+      font-weight:900; font-size:44px; letter-spacing:.06em; color: var(--txt);
+      text-shadow: 0 0 18px var(--accent), 0 0 4px var(--accent-2);
+      animation: fx-text 1000ms ease-out forwards;
     }
-    .score-pop{
-      position:absolute; right:12px; top:-4px; z-index:2; padding:4px 8px; border-radius:10px; font-weight:700; font-variant-numeric:tabular-nums;
-      background:#0b1220; border:1px solid #2a3658; color:#a9c1ff; box-shadow:0 6px 14px rgba(0,0,0,.3);
-      animation: score-pop-in 800ms cubic-bezier(.2,1,.2,1) forwards;
-    }
-    @keyframes score-pop-in{
-      0%{transform:translateY(-6px) scale(.9);opacity:0}
-      40%{transform:translateY(0) scale(1.05);opacity:1}
-      100%{transform:translateY(-6px) scale(1);opacity:0}
+    .ippon-fx.big .fx-ring{ border-width:4px; animation-duration:1400ms; }
+    .ippon-fx.big .fx-ring.r2{ animation-delay:200ms; }
+    .ippon-fx.big .fx-text{ font-size:54px; animation-duration:1400ms; text-shadow: 0 0 26px var(--accent), 0 0 6px var(--accent-2); }
+    @keyframes fx-ring{ 0%{transform:scale(.3); opacity:.9} 100%{transform:scale(3.2); opacity:0} }
+    @keyframes fx-text{ 0%{transform:scale(.7); opacity:0} 20%{transform:scale(1.08); opacity:1} 35%{transform:scale(1)} 75%{opacity:1} 100%{transform:scale(1); opacity:0} }
+    /* 端末の「動きを減らす」設定：輪は出さない。アニメーションは下の全体の指定で止まるので、
+       「IPPON!」の文字が動かずに少しだけ出て消え（score_animation.js で 0.8 秒）、点数の行は弾まない */
+    @media (prefers-reduced-motion: reduce){
+      .ippon-fx .fx-ring{ display:none; }
     }
 
     /* ====== AB評価モーダル ====== */
