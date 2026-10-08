@@ -380,6 +380,15 @@
         <div>人数: <span id="roomCapacity">-</span></div>
       </div>
 
+      <!-- AI採点あり/なし。ホストだけが切り替えられる（ほかの人には今のモードだけ出す） -->
+      <div class="row" style="margin-top:10px; gap:8px; flex-wrap:nowrap;">
+        <span>AI採点:</span>
+        <button id="scoringOnBtn" class="ghost btn-sm hidden">あり</button>
+        <button id="scoringOffBtn" class="ghost btn-sm hidden">なし</button>
+        <span id="scoringLabel" class="pill">あり</span>
+      </div>
+      <div id="scoringNote" class="muted hidden" style="margin-top:4px;">点数・一本・勝敗なしで、回答を出し合います</div>
+
       <div class="list" id="memberList" style="margin-top:12px;"></div>
       <!-- 開始はホストだけ（2人以上で押せる）。ホスト以外には待っている旨を出す -->
       <button id="startRoomBtn" class="primary hidden" style="margin-top:12px; width:100%;">開始</button>
@@ -399,7 +408,8 @@
         <div id="imgCredit" class="credit hidden"></div>
         <!-- テキストお題 -->
         <div id="promptText" style="font-size:20px;" class="hidden">—</div>
-        <div class="muted" style="margin-top:4px;"><span class="js-threshold">7</span>点以上で「一本」。一本の数がいちばん多い人の勝ち</div>
+        <div id="ruleLine" class="muted" style="margin-top:4px;"><span class="js-threshold">7</span>点以上で「一本」。一本の数がいちばん多い人の勝ち</div>
+        <div id="ruleLineUnscored" class="muted hidden" style="margin-top:4px;">AI採点なし：点数・勝敗なしで、回答を出し合います</div>
         <!-- お題変更：お題のすぐ下に小さく。投票の状況はボタンの横 -->
         <div id="skipBox" class="row" style="margin-top:6px; gap:8px; flex-wrap:nowrap;">
           <button id="skipBtn" class="ghost btn-sm">お題変更</button>
@@ -419,13 +429,13 @@
 
         <!-- 右：提出一覧＋スコア（自分の回答も、この一覧に「あなた」として出る） -->
         <div style="flex:1; min-width:260px;">
-          <div class="muted">提出一覧（採点は即時表示）</div>
+          <div id="roundPanelLabel" class="muted">提出一覧（採点は即時表示）</div>
           <div id="roundPanel" class="list" style="margin-top:8px;"></div>
 
           <div class="subcard" style="margin-top:12px;">
             <div class="row" style="justify-content:space-between;">
               <b>スコアボード</b>
-              <span class="muted">一本ライン: <b id="targetIppon">7</b>点</span>
+              <span id="targetIpponWrap" class="muted">一本ライン: <b id="targetIppon">7</b>点</span>
             </div>
             <div id="scoreBoard" class="list" style="margin-top:8px;"></div>
           </div>

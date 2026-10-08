@@ -378,6 +378,9 @@ againBtn?.addEventListener("click", () => {
   leaveToLobby();
 }, { passive: true });
 $("abAgainBtn")?.addEventListener("click", backToRoom, { passive: true });
+/* ホストが「AI採点あり/なし」を切り替える（待機中だけ） */
+$("scoringOnBtn")?.addEventListener("click", () => send("set_scoring", { on: true }), { passive: true });
+$("scoringOffBtn")?.addEventListener("click", () => send("set_scoring", { on: false }), { passive: true });
 /* 同じ部屋の待機画面に戻る（AB評価の途中でも） */
 socket.on("room_rejoined", (room) => {
   if (abStartTimer) { clearTimeout(abStartTimer); abStartTimer = null; }
@@ -479,18 +482,29 @@ socket.on("game_started", (room) => {
   setMatchState("playing");
   show(countdownPill, true);
   show(matchLeaveBtn, true);
-  const zeroBoard = Object.fromEntries((room.members || []).map((m) => [m.sid, { name: m.name, ippon: 0, points: 0 }]));
+  setMatchScoring(room.scoring !== false);
+  const zeroBoard = Object.fromEntries((room.members || []).map((m) => [m.sid, { name: m.name, ippon: 0, points: 0, answers: 0 }]));
   renderMatchScore(zeroBoard);
   renderBoard(zeroBoard, null);  // 同じ部屋で続けて遊ぶとき、前の試合の点数を残さない
   show(matchBar, true);
   window.scrollTo(0, 0);
 });
 
-/* 上部バーの一本の数（自分を先頭に） */
+/* AI採点あり/なし（ルームコードの試合だけ「なし」がある）。なしのときは点数・一本の代わりに回答数を出す */
+let matchScoring = true;
+function setMatchScoring(on) {
+  matchScoring = on;
+  show($("ruleLine"), on);
+  show($("ruleLineUnscored"), !on);
+  show($("targetIpponWrap"), on);
+  $("roundPanelLabel").textContent = on ? "提出一覧（採点は即時表示）" : "提出一覧";
+}
+
+/* 上部バーの一本の数（自分を先頭に）。AI採点なしのときは回答数 */
 function renderMatchScore(board) {
   if (!matchScore) return;
   const items = Object.entries(board || {}).sort((a, b) => (b[0] === mySid) - (a[0] === mySid));
-  matchScore.textContent = items.map(([sid, v]) => `${sid === mySid ? "あなた" : v.name} ${v.ippon}本`).join(" ・ ");
+  matchScore.textContent = items.map(([sid, v]) => `${sid === mySid ? "あなた" : v.name} ${matchScoring ? `${v.ippon}本` : `${v.answers || 0}件`}`).join(" ・ ");
 }
 
 socket.on("overtime_started", (p) => {
@@ -511,7 +525,7 @@ socket.on("judging_started", () => {
   if (skipBtn) skipBtn.disabled = true;
 });
 
-socket.on("match_over", ({ winner, board, summary, room_match }) => {
+socket.on("match_over", ({ winner, board, summary, room_match, scoring }) => {
   matchActive = false;
   stopCountdown();
   setMatchState("ended");
@@ -525,7 +539,7 @@ socket.on("match_over", ({ winner, board, summary, room_match }) => {
   resultIsRoom = typeof room_match === "boolean" ? room_match : (!!currentRoom && !currentRoom.is_quick);
   if (againBtn) { againBtn.textContent = resultIsRoom ? "もう1回（この部屋で）" : "もう1回（クイックマッチ）"; show(againBtn, true); }
   show($("abAgainBtn"), resultIsRoom);
-  showResult(winner, board, summary);
+  if (scoring === false) showUnscoredResult(summary); else showResult(winner, board, summary);
   // 結果を見てもらってから、AB評価を自動で始める（スキップできる）
   if (abStartTimer) clearTimeout(abStartTimer);
   abStartTimer = setTimeout(() => { abStartTimer = null; if (!resultCard.classList.contains("hidden")) startABSession(); }, 2500);
@@ -553,6 +567,33 @@ function showResult(winner, board, summary) {
         <span>${r.ippon} 本 / ${Number(r.points).toFixed(1)} 点</span>
       </div>
       <div style="margin-top:6px; font-size:14px;">${best}</div>`;
+    resultRanking.appendChild(row);
+  }
+  show(resultNote, false);
+  show(gameCard, false);
+  show(roomCard, false);
+  show(resultCard, true);
+  resultCard.scrollIntoView({ block: "start" });
+}
+
+/* AI採点なしの結果画面：勝敗は付けず、お題ごとに全員の回答を並べる */
+function showUnscoredResult(summary) {
+  resultTitle.textContent = "おつかれさまでした";
+  const counts = (summary?.counts || []).map((c) => `${c.sid === mySid ? "あなた" : escapeHtml(c.name)} ${c.answers}件`).join(" ・ ");
+  resultReason.innerHTML = `AI採点なしの試合です${counts ? `<br>${counts}` : ""}`;
+  resultRanking.innerHTML = "";
+  const prompts = summary?.prompts || [];
+  if (!prompts.length) {
+    const row = document.createElement("div");
+    row.className = "subcard muted";
+    row.textContent = "回答はありませんでした";
+    resultRanking.appendChild(row);
+  }
+  for (const p of prompts) {
+    const row = document.createElement("div");
+    row.className = "subcard";
+    const list = p.answers.map((a) => `<div class="answer${a.sid === mySid ? " mine" : ""}" style="margin-top:6px;"><b>${a.sid === mySid ? "あなた" : escapeHtml(a.name)}</b>：${escapeHtml(a.text)}</div>`).join("");
+    row.innerHTML = `<div><b>お題：${escapeHtml(p.prompt)}</b></div>${list}`;
     resultRanking.appendChild(row);
   }
   show(resultNote, false);
@@ -667,12 +708,13 @@ socket.on("answer_accepted", ({ text, seq }) => {
   // 自分の回答は、提出一覧に「あなた」として出る（answer_submitted）。入力欄の下には別の一覧を出さない
 });
 
-socket.on("answer_submitted", ({ name, text, id, sid }) => {
+socket.on("answer_submitted", ({ name, text, id, sid, scoring }) => {
   const box = document.createElement("div");
   const mine = sid === mySid;
   box.className = "answer-item answer" + (mine ? " mine" : "");   // 自分の回答は枠の色でもわかるように
   box.dataset.answerId = id;
-  box.innerHTML = `<div><b>${mine ? "あなた" : escapeHtml(name)}</b>：${escapeHtml(text)}</div><div class="muted" style="font-size:12px;">採点中...</div>`;
+  const meta = scoring === false ? "" : `<div class="muted" style="font-size:12px;">採点中...</div>`;  // AI採点なしは採点しない
+  box.innerHTML = `<div><b>${mine ? "あなた" : escapeHtml(name)}</b>：${escapeHtml(text)}</div>${meta}`;
   roundPanel?.prepend(box);
 });
 
@@ -700,12 +742,16 @@ function _renderBoard(board, target) {
   renderMatchScore(board);
   if (!scoreBoard) return;
   // innerHTML置き換え（1回だけ）
-  const items = Object.entries(board || {}).sort((a, b) => b[1].ippon - a[1].ippon || b[1].points - a[1].points);
+  // AI採点なしのときは回答数（参加した順のまま並べる）
+  const items = matchScoring
+    ? Object.entries(board || {}).sort((a, b) => b[1].ippon - a[1].ippon || b[1].points - a[1].points)
+    : Object.entries(board || {});
   const frag = document.createDocumentFragment();
   for (const [sid, v] of items) {
     const row = document.createElement("div");
     row.className = "member";
-    row.innerHTML = `<div>${escapeHtml(v.name)}${sid === mySid ? "（あなた）" : ""}</div><div>${v.ippon} 本 / ${v.points.toFixed(1)} 点</div>`;
+    const value = matchScoring ? `${v.ippon} 本 / ${v.points.toFixed(1)} 点` : `${v.answers || 0} 件`;
+    row.innerHTML = `<div>${escapeHtml(v.name)}${sid === mySid ? "（あなた）" : ""}</div><div>${value}</div>`;
     frag.appendChild(row);
   }
   scoreBoard.innerHTML = "";
@@ -760,6 +806,14 @@ function decorateRoom(room) {
     else if (room.status === "overtime") roomMessage.textContent = "サドンデス中：次の一本で決着";
     else if (room.status === "ended") roomMessage.textContent = "試合は終了しました。";
   }
+  // AI採点あり/なし：ホストは切り替えボタン、ほかの人には今のモードだけ
+  const scoringOn = room.scoring !== false;
+  const canSwitch = isHost && room.status === "waiting";
+  $("scoringOnBtn").className = `${scoringOn ? "primary" : "ghost"} btn-sm${canSwitch ? "" : " hidden"}`;
+  $("scoringOffBtn").className = `${scoringOn ? "ghost" : "primary"} btn-sm${canSwitch ? "" : " hidden"}`;
+  show($("scoringLabel"), !canSwitch);
+  $("scoringLabel").textContent = scoringOn ? "あり" : "なし";
+  show($("scoringNote"), !scoringOn);
   // 「開始」はホストにだけ出す。1人のときは押せない
   if (startRoomBtn) {
     const meAway = (room.members || []).some((m) => m.sid === mySid && m.away);

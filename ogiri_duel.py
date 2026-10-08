@@ -451,6 +451,8 @@ class Room:
         self.devices: Dict[str, str] = {}        # sid → 端末の種類（試合開始時に決める）
         self.is_quick = False                    # クイックマッチの部屋か（開始時の表示の出し分け）
         self.host_sid: Optional[str] = None      # ルームコードの部屋のホスト（「開始」を押せる人）。クイックマッチは None
+        self.scoring = True                      # ルームコードの部屋の「AI採点あり/なし」（ホストが待機中に切り替える）。クイックマッチは常にあり
+        self.match_scoring = True                # 今の（最後の）試合が AI採点ありか（試合を始めたときに scoring から決める）
         self.away: Set[str] = set()              # ルームコードの部屋で、試合のあとまだ結果画面にいる人（「もう1回」で待機画面に戻ると外れる）
 
         # 採点待ち（時間切れのとき、採点が終わってから勝敗を決めるため）
@@ -468,6 +470,7 @@ class Room:
             "min_players": ROOM_MIN_PLAYERS,
             "members": [{"sid": m["sid"], "name": m["name"], "away": m["sid"] in self.away} for m in self.members],
             "is_quick": self.is_quick,
+            "scoring": self.scoring,
             "status": self.status,
             "round_no": self.round_no,
             "mode": self.round_mode,
@@ -569,6 +572,7 @@ def _new_segment_for_prompt(room: Room, prompt: dict) -> dict:
         "genre": prompt.get("genre",""),
         "prompt_source": prompt.get("source",""),  # stock / ai / static（統計のキーの決め方に使う）
         "stats_recorded": False,   # topic_stats に記録済みか（二重記録の防止）
+        "scoring_mode": "ai" if room.match_scoring else "none",  # AI採点あり（ai）/なし（none）の試合か
         "answers": [],             # {id,sid,name,text,ts, score(採点が終わると入る)}
         "skip_count": 0,
         "started_at": _utcnow_iso(),
@@ -599,7 +603,8 @@ def _write_segment(seg: dict):
         "answers": [_segment_answer_row(a) for a in seg.get("answers",[])],
         "skip_count": seg.get("skip_count",0),
         "started_at": seg.get("started_at"),
-        "ended_at": seg.get("ended_at")
+        "ended_at": seg.get("ended_at"),
+        "scoring_mode": seg.get("scoring_mode", "ai"),
     }
     if RECORD_STORE:
         RECORD_STORE.insert_segment(row)
@@ -610,7 +615,8 @@ def _write_segment(seg: dict):
 def _write_segment_after_scoring(seg: dict):
     # 採点は回答のあと裏で行うので、全部の採点が終わるまで（最大 SEGMENT_SCORE_WAIT_SEC 秒）待ってから保存する
     deadline = time.time() + SEGMENT_SCORE_WAIT_SEC
-    while time.time() < deadline and any("score" not in a for a in seg.get("answers", [])):
+    # AI採点なしの試合の回答は採点しないので待たない
+    while seg.get("scoring_mode") != "none" and time.time() < deadline and any("score" not in a for a in seg.get("answers", [])):
         socketio.sleep(0.5)
     _write_segment(seg)
 
@@ -807,7 +813,8 @@ def _begin_battle(room: Room):
     room.match_recorded = False
     room.pending_scores = set(); room.uncounted_scores = set(); room.judging_phase = None
     room.devices = {m["sid"]: sid_to_device.get(m["sid"], "unknown") for m in room.members}  # 試合開始時の端末の種類
-    room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0} for m in room.members}
+    room.match_scoring = room.scoring or room.is_quick  # この試合のモード（試合中は変わらない）
+    room.board = {m["sid"]: {"name": m["name"], "ippon": 0, "points": 0.0, "answers": 0} for m in room.members}
     socketio.emit("game_started", room.to_public(), room=room.code)
     start_round(room, BATTLE_SECONDS, pick_new_prompt=False)  # お題は上で選んだもの
     send_skip_progress(room)  # お題変更に必要な人数を最初から表示するため
@@ -821,6 +828,10 @@ def decide_or_overtime(room: Room):
     # AB評価のペアは、ここ（ラウンド終了時）ではなく、試合終了後の ab_request で全お題から作る
     socketio.emit("round_ended", {"answers": sum(len(v) for v in room.answers.values())}, room=room.code)
 
+    # AI採点なしの試合は、勝敗を付けずに終える（延長戦なし）
+    if not room.match_scoring:
+        _end_match(room, "round_end")
+        return
     # 勝敗：一本の数が一番多い人が1人だけなら決着、並んでいれば（全員0本も含む）延長戦
     if _sole_leader(room) is not None or not room.board:
         _end_match(room, "round_end")
@@ -903,21 +914,33 @@ def _match_summary(room: Room, result: str, winner_sid: Optional[str], reason: s
     return {"result": result, "reason": RESULT_REASONS.get((result, reason), ""), "end_reason": reason,
             "overtime": room.went_overtime, "ranking": ranking}
 
+def _unscored_summary(room: Room) -> dict:
+    """AI採点なしの試合の結果画面用：お題ごとの全員の回答（出した順）と、各自の回答数。"""
+    prompts = []
+    for seg in _ab_segments(room):
+        answers = [{"sid": a["sid"], "name": a.get("name", ""), "text": a["text"]} for a in seg.get("answers", [])]
+        if answers:
+            prompts.append({"prompt": seg.get("prompt_text", ""), "answers": answers})
+    counts = [{"sid": sid, "name": v["name"], "answers": v.get("answers", 0)} for sid, v in room.board.items()]
+    return {"result": "unscored", "prompts": prompts, "counts": counts}
+
 def _end_match(room: Room, reason: str):
     """試合を終える。勝者を決めて match_over を送り、そのときのスコアボードで勝敗を記録する。"""
-    winner_sid = _sole_leader(room)
+    winner_sid = _sole_leader(room) if room.match_scoring else None  # AI採点なしは勝敗を付けない
     room.status = "ended"
     if not room.is_quick:
         room.away = {m["sid"] for m in room.members}  # 「もう1回」を押すまでは結果画面にいる
     w = room.board.get(winner_sid) if winner_sid else None
-    result = "win" if w else "draw"
+    result = ("win" if w else "draw") if room.match_scoring else "unscored"
+    summary = _match_summary(room, result, winner_sid, reason) if room.match_scoring else _unscored_summary(room)
     socketio.emit("match_over", {"winner": ({"name": w["name"], **w} if w else None), "board": room.board,
                                  "room_match": not room.is_quick,  # ルームコードの試合か（結果画面のボタンの出し分け）
-                                 "summary": _match_summary(room, result, winner_sid, reason)}, room=room.code)
+                                 "scoring": room.match_scoring,   # AI採点ありの試合か（結果画面の出し分け）
+                                 "summary": summary}, room=room.code)
     _record_match_result(room, result, winner_sid, reason)
 
 def _record_match_result(room: Room, result: str, winner_sid: Optional[str], reason: str):
-    """勝敗の記録（1試合1回）。result: win / draw / abandoned（全員が途中で抜けた）"""
+    """勝敗の記録（1試合1回）。result: win / draw / abandoned（全員が途中で抜けた）/ unscored（AI採点なしの試合）"""
     if room.match_recorded or not room.match_id: return
     room.match_recorded = True
     w = room.board.get(winner_sid) if winner_sid else None
@@ -934,6 +957,7 @@ def _record_match_result(room: Room, result: str, winner_sid: Optional[str], rea
                      "device": room.devices.get(sid, "unknown")}
                     for sid, v in room.board.items()],
         "devices": [room.devices.get(sid, "unknown") for sid in room.board],  # 端末の種類（players と同じ並び）
+        "scoring_mode": "ai" if room.match_scoring else "none",
         "started_at": room.match_started_at,
         "ended_at": _utcnow_iso(),
     }
@@ -1193,6 +1217,15 @@ def on_start_room(_data=None):
     room.away = set()
     start_battle(room)
 
+@socketio.on("set_scoring")
+def on_set_scoring(data=None):
+    """ルームの待機中に、ホストが「AI採点あり/なし」を切り替える。"""
+    room = rooms.get(sid_to_room.get(request.sid) or "")
+    if not room or room.is_quick or room.host_sid != request.sid or room.status != "waiting":
+        return
+    room.scoring = bool((data or {}).get("on", True))
+    broadcast_room_update(room)
+
 @socketio.on("room_again")
 def on_room_again(_data=None):
     """ルームコードの試合のあと「もう1回（この部屋で）」：結果画面から、同じ部屋の待機画面に戻る。"""
@@ -1248,7 +1281,7 @@ def on_submit_answer(data):
         room.current_segment["answers"].append(seg_ans)
 
     emit("answer_accepted", {"text": text, "seq": len(arr)})
-    socketio.emit("answer_submitted", {"sid": sid, "name": name, **rec}, room=room.code)
+    socketio.emit("answer_submitted", {"sid": sid, "name": name, "scoring": room.match_scoring, **rec}, room=room.code)
 
     def score_task(room_obj: Room, rec_obj: dict, seg_obj: Optional[dict]):
         try:
@@ -1288,6 +1321,14 @@ def on_submit_answer(data):
         if counted and final_score >= SCORE_THRESHOLD and room_obj.status == "overtime":
             maybe_finish_overtime(room_obj)
 
+    if not room.match_scoring:
+        # AI採点なし：AIには送らない。回答数だけ数えて、スコアボードに出す
+        if sid in room.board:
+            room.board[sid]["answers"] = room.board[sid].get("answers", 0) + 1
+        socketio.emit("scoreboard_update", {"board": room.board, "target": SCORE_THRESHOLD}, room=room.code)
+        return
+    if sid in room.board:
+        room.board[sid]["answers"] = room.board[sid].get("answers", 0) + 1
     room.pending_scores.add(ans_id)
     socketio.start_background_task(score_task, room, rec, seg_ans)
 
