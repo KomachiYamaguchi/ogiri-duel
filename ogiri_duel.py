@@ -16,6 +16,33 @@ import mimetypes
 
 # ========= 環境変数 =========
 OPENAI_MODEL = os.environ.get("OGIRI_MODEL", "gpt-4o-mini")
+# 回答の採点に使うモデル。SCORE_MODEL があればそれ。なければ今までどおり OGIRI_MODEL（それもなければ gpt-4o-mini）
+SCORE_MODEL = os.environ.get("SCORE_MODEL", "").strip() or OPENAI_MODEL
+# 推論モデル（gpt-5 系など）の推論の量：none / low / medium。未設定ならモデルの初期値（送らない）。gpt-4o-mini などには使わない
+SCORE_REASONING = os.environ.get("SCORE_REASONING", "").strip().lower()
+if SCORE_REASONING and SCORE_REASONING not in ("none", "low", "medium"):
+    print(f"[WARN] SCORE_REASONING={SCORE_REASONING!r} is not none/low/medium; ignored", flush=True)
+    SCORE_REASONING = ""
+
+def _is_reasoning_model(model: str) -> bool:
+    return model.startswith(("gpt-5", "o1", "o3", "o4"))
+
+def score_request_options(model: str = None, reasoning: str = None) -> dict:
+    """採点の呼び出しに付ける設定（JSON で返す形式は共通）。
+    推論モデルは temperature を初期値（1）以外にできないので、推論の量が none のときだけ temperature 0.2 を送る。
+    それ以外のモデル（gpt-4o-mini など）は今までどおり temperature 0.2。"""
+    model = SCORE_MODEL if model is None else model
+    reasoning = SCORE_REASONING if reasoning is None else reasoning
+    opts = {"response_format": {"type": "json_object"}}
+    if not _is_reasoning_model(model):
+        opts["temperature"] = 0.2
+    elif reasoning:
+        opts["reasoning_effort"] = reasoning
+        if reasoning == "none":
+            opts["temperature"] = 0.2
+    return opts
+
+print(f"[INFO] score model: {SCORE_MODEL} {score_request_options()}", flush=True)
 
 # 画像お題は廃止（UI/内部も text 固定）
 OGIRI_MODE = "text"  # 強制テキスト
@@ -399,24 +426,24 @@ def _extract_json(s: str):
 def score_one(room: "Room", a: dict) -> dict:
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key or OPENAI_SDK == "none" or OPENAI_CLIENT is None:
-        return {"id": a["id"], "score_raw": 0.0, "comment": "NO_API_KEY"}
+        return {"id": a["id"], "score_raw": 0.0, "comment": "NO_API_KEY", "model": SCORE_MODEL}
     try:
         topic = room.current_prompt
         msgs = build_one_prompt(topic, a["name"], a["text"], a["id"])
         if OPENAI_SDK == "v1":
-            resp = OPENAI_CLIENT.chat.completions.create(model=OPENAI_MODEL, messages=msgs, temperature=0.2, response_format={"type":"json_object"})
+            resp = OPENAI_CLIENT.chat.completions.create(model=SCORE_MODEL, messages=msgs, **score_request_options())
             out = resp.choices[0].message.content
         else:
-            resp = OPENAI_CLIENT.ChatCompletion.create(model=OPENAI_MODEL, messages=msgs, temperature=0.2)
+            resp = OPENAI_CLIENT.ChatCompletion.create(model=SCORE_MODEL, messages=msgs, temperature=0.2)
             out = resp["choices"][0]["message"]["content"]
         data = _extract_json(out) or {}
         try: sc = float(data.get("score", 0))
         except Exception: sc = 0.0
         sc = max(0.0, min(10.0, sc))
         comment = str(data.get("comment", "") or "")
-        return {"id": a["id"], "score_raw": sc, "comment": comment}
+        return {"id": a["id"], "score_raw": sc, "comment": comment, "model": SCORE_MODEL}
     except Exception as e:
-        return {"id": a["id"], "score_raw": 0.0, "comment": f"ERROR: {e}"}
+        return {"id": a["id"], "score_raw": 0.0, "comment": f"ERROR: {e}", "model": SCORE_MODEL}
 
 # ========= 状態（セグメント管理込み） =========
 class Room:
@@ -603,6 +630,7 @@ def _segment_answer_row(a: dict) -> dict:
             "scored": bool(sc),
             "score_raw": sc.get("score_raw"), "penalty": sc.get("penalty"), "score": sc.get("score"),
             "ippon": sc.get("ippon"), "comment": sc.get("comment"),
+            "score_model": sc.get("model"),  # 採点に使ったモデル（この項目を足す前の記録にはない）
             # 勝敗に入ったか（時間切れ後の採点待ちに間に合わなかった回答は false）
             "counted": sc.get("counted")}
 
@@ -1415,7 +1443,8 @@ def on_submit_answer(data):
                 # お題の記録（segments）用に、この回答の採点結果を残す。お題がもう閉じていても、保存前なら反映される
                 seg_obj["score"] = {"score_raw": round(float(base["score_raw"]), 2), "penalty": dup["penalty"],
                                     "score": round(float(final_score), 2), "ippon": final_score >= SCORE_THRESHOLD,
-                                    "comment": base.get("comment",""), "counted": counted}
+                                    "comment": base.get("comment",""), "counted": counted,
+                                    "model": base.get("model")}  # どのモデルで採点したか
             board_changed = False
             if counted and rec_obj["sid"] in room_obj.board:
                 if final_score >= SCORE_THRESHOLD:
