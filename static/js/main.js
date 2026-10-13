@@ -545,6 +545,7 @@ socket.on("game_started", (room) => {
   renderBoard(zeroBoard, null);  // 同じ部屋で続けて遊ぶとき、前の試合の点数を残さない
   show(matchBar, true);
   window.scrollTo(0, 0);
+  $("appFrame")?.scrollTo(0, 0);  // PCで開いたときは、枠の中をスクロールしている
 });
 
 /* AI採点あり/なし（ルームコードの試合だけ「なし」がある）。なしのときは点数・一本の代わりに回答数を出す */

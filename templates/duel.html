@@ -143,6 +143,15 @@
       .primary, .ghost, button{ width: 100%; }
       #roomCodeInput{ flex:1; }
     }
+    /* PCで開いたときの枠（#appFrame、幅430px）の中でも、上と同じスマホ用の見た目にする。
+       枠がないとき（スマホ）は @container が当てはまらないので、上の @media だけが効く */
+    @container app (max-width: 760px){
+      .grid{ grid-template-columns: 1fr; }
+      .hdr-right{ gap:8px; }
+      .container{ padding: 0 12px; }
+      .primary, .ghost, button{ width: 100%; }
+      #roomCodeInput{ flex:1; }
+    }
 
     /* ====== Lobby Tabs ====== */
     /* 2つのタブはロビーの主役。横並びの大きなボタンにして、選ばれているほうを枠と文字の濃さで示す */
@@ -236,6 +245,29 @@
       .ippon-fx .fx-ring{ display:none; }
     }
 
+    /* ====== PCで開いたとき：スマホの幅の枠の中に、縦長で表示する ======
+       幅が600pxより広く、高さも500px以上のとき（スマホは横にしても高さが足りず当てはまらないので、見た目は変わらない）。
+       マウスの有無では見分けない（タッチ画面つきのPCが外れるため）。
+       枠の中だけをスクロールし、transform で、画面に固定で出るもの（演出・ポップアップ・ヘッダー）を枠の中に収める */
+    @media (min-width: 601px) and (min-height: 500px){
+      html, body{ height:100%; overflow:hidden; }
+      body{ background:#05070b; }  /* 枠の外：今の背景より一段暗い、落ち着いた色 */
+      #appFrame{
+        width:430px; max-width:100%; height:100dvh; margin:0 auto;
+        overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain;
+        scrollbar-width:thin; scrollbar-gutter:stable;  /* スクロールバーは細く。出ても中の幅が変わらないよう、場所を取っておく */
+        position:relative; transform:translateZ(0);
+        container-type:inline-size; container-name:app;
+        background:
+          radial-gradient(1200px 600px at 80% -10%, rgba(58,99,255,.12), transparent 55%),
+          radial-gradient(1000px 520px at -10% 10%, rgba(49,80,210,.10), transparent 60%),
+          var(--bg);
+        border-left:1px solid var(--line); border-right:1px solid var(--line);
+        box-shadow:0 0 60px rgba(0,0,0,.6);
+      }
+      #appFrame .modal-card{ width:calc(100% - 16px); }  /* AB評価のポップアップを枠の幅に合わせる */
+    }
+
     /* ====== AB評価モーダル ====== */
     .modal-backdrop{ position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:1000; }
     .modal{ position:fixed; inset:0; display:none; place-items:center; z-index:1001; }
@@ -283,6 +315,8 @@
   </script>
 </head>
 <body>
+  <!-- アプリ全体の箱。スマホでは何も変えない。PCで開いたときだけ、スマホの幅の枠になる（CSS の「PCで開いたとき」） -->
+  <div id="appFrame">
   <!-- 接続が切れている間だけ出す -->
   <div id="connBanner" class="conn-banner pill status-overtime hidden">再接続中…</div>
   <div id="updateBanner" class="conn-banner pill status-wait hidden">新しい版があります。ロビーに戻ると読み込み直します</div>
@@ -532,6 +566,7 @@
       <button id="abAgainBtn" class="ghost btn-sm hidden" style="margin-top:10px;">もう1回（この部屋で）</button>
     </div>
   </div>
+  </div><!-- /#appFrame -->
 
   <!-- ロビーのタブ切り替え（表示/非表示のみ） -->
   <script>

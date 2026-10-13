@@ -44,7 +44,8 @@ function ippon(score, mine) {
   el.className = "ippon-fx" + (big ? " big" : "") + (mine ? "" : " theirs");
   el.setAttribute("aria-hidden", "true");
   el.innerHTML = `<span class="fx-ring"></span>${big ? '<span class="fx-ring r2"></span>' : ""}<span class="fx-text">IPPON!</span>`;
-  document.body.appendChild(el);
+  // アプリの枠の中に出す（PCで開いたときに、スマホの幅の枠からはみ出さないように）
+  (document.getElementById("appFrame") || document.body).appendChild(el);
   const ms = reducedMotion() ? 800 : (big ? 1700 : 1150);  // いちばん長いアニメーションが終わるまで
   const entry = { el, mine, timer: 0 };
   entry.timer = setTimeout(() => { try { el.remove(); } catch (_e) {} if (active === entry) active = null; }, ms);
